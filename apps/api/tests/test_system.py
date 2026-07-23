@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.main import create_app
 
 client = TestClient(create_app())
@@ -31,3 +32,10 @@ def test_openapi_is_available_outside_production() -> None:
 
     assert response.status_code == 200
     assert response.json()["info"]["title"] == "QuantumFintek API"
+
+
+def test_documentation_is_disabled_in_production() -> None:
+    production_client = TestClient(create_app(Settings(environment="production")))
+
+    assert production_client.get("/docs").status_code == 404
+    assert production_client.get("/openapi.json").status_code == 404
