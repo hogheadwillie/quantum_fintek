@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "staging", "production"] = "development"
     version: str = "0.1.0"
     api_prefix: str = "/api/v1"
+    jwt_secret: SecretStr = SecretStr("development-only-change-me")
+    access_token_minutes: int = 15
 
 
 @lru_cache
