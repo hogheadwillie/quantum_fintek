@@ -1,11 +1,11 @@
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict
 
 
 class LoginRequest(BaseModel):
     organization_slug: str
-    email: EmailStr
+    email: str
     password: str
 
 
@@ -19,6 +19,6 @@ class UserResponse(BaseModel):
 
     id: UUID
     organization_id: UUID
-    email: EmailStr
+    email: str
     is_active: bool
     is_superuser: bool
