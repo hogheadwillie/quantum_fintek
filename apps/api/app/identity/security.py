@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import jwt
 from pwdlib import PasswordHash
@@ -12,12 +12,12 @@ _ALGORITHM = "HS256"
 
 def hash_password(password: str) -> str:
     """Hash a password using the recommended Argon2 configuration."""
-    return _password_hash.hash(password)
+    return cast(str, _password_hash.hash(password))
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     """Verify a plaintext password against a stored hash."""
-    return _password_hash.verify(password, password_hash)
+    return cast(bool, _password_hash.verify(password, password_hash))
 
 
 def create_access_token(subject: str, settings: Settings) -> str:
