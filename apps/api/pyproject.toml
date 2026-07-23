@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28,<1.0",
+  "mypy>=1.14,<2.0",
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
   "ruff>=0.9,<1.0",
@@ -37,3 +38,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["app", "tests"]
