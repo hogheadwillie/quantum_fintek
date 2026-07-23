@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "staging", "production"] = "development"
     version: str = "0.1.0"
     api_prefix: str = "/api/v1"
+    database_url: str = "sqlite+pysqlite:///./quantum_fintek.db"
     jwt_secret: SecretStr = SecretStr("development-only-change-me")
     access_token_minutes: int = 15
 
