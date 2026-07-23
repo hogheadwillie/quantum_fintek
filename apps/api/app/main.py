@@ -29,10 +29,12 @@ def create_router(settings: Settings) -> APIRouter:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create an application using explicit settings or the environment defaults."""
     resolved_settings = settings or get_settings()
+    expose_documentation = resolved_settings.environment != "production"
     application = FastAPI(
         title=resolved_settings.app_name,
         version=resolved_settings.version,
-        docs_url="/docs" if resolved_settings.environment != "production" else None,
+        docs_url="/docs" if expose_documentation else None,
+        openapi_url="/openapi.json" if expose_documentation else None,
         redoc_url=None,
     )
     application.include_router(create_router(resolved_settings))
