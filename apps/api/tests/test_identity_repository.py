@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import database
@@ -86,7 +86,7 @@ def test_identity_schemas_serialize_contracts(session: Session) -> None:
 
 def test_database_session_dependency_yields_and_closes(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine("sqlite+pysqlite://")
-    factory = database.sessionmaker(bind=engine, class_=Session)
+    factory = sessionmaker(bind=engine, class_=Session)
     monkeypatch.setattr(database, "SessionLocal", factory)
 
     dependency = database.get_session()
