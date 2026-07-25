@@ -45,11 +45,14 @@ def test_identity_repository_is_tenant_scoped(session: Session) -> None:
 
     assert stored is not None
     assert stored.id == user.id
-    assert get_user_by_identity(
-        session,
-        organization_slug="another-tenant",
-        email="admin@example.com",
-    ) is None
+    assert (
+        get_user_by_identity(
+            session,
+            organization_slug="another-tenant",
+            email="admin@example.com",
+        )
+        is None
+    )
     assert get_user_by_id(session, str(user.id)) is user
     assert get_user_by_id(session, "not-a-uuid") is None
     assert get_user_by_id(session, str(uuid4())) is None
