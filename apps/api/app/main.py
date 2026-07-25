@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI
 
 from app.config import Settings, get_settings
+from app.identity.router import create_identity_router
 
 
 def create_router(settings: Settings) -> APIRouter:
@@ -38,6 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
     )
     application.include_router(create_router(resolved_settings))
+    application.include_router(create_identity_router(resolved_settings))
     return application
 
 
