@@ -38,6 +38,15 @@ class TenantScopedUserRepository:
             return None
         return self._session.get(User, parsed_id)
 
+    def list_for_organization(self, organization_id: UUID) -> list[User]:
+        """Return users belonging to one organization in stable email order."""
+        statement = (
+            select(User)
+            .where(User.organization_id == organization_id)
+            .order_by(User.email)
+        )
+        return list(self._session.scalars(statement))
+
 
 def get_user_by_identity(
     session: Session,
