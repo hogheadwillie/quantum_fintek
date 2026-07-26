@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.database import Base, get_session
-from app.identity.models import Organization, User
+from app.identity.models import ROLE_ADMIN, Organization, User
 from app.identity.security import create_access_token, hash_password
 from app.main import create_app
 
@@ -24,6 +24,7 @@ class IdentityApi:
     settings: Settings
     organization_id: UUID
     active_user_id: UUID
+    member_user_id: UUID
     inactive_user_id: UUID
 
 
@@ -53,6 +54,12 @@ def identity_api() -> Generator[IdentityApi, None, None]:
             organization=organization,
             email="Admin@Example.COM",
             password_hash=hash_password("correct horse battery staple"),
+            role=ROLE_ADMIN,
+        )
+        member_user = User(
+            organization=organization,
+            email="member@example.com",
+            password_hash=hash_password("correct horse battery staple"),
         )
         inactive_user = User(
             organization=organization,
@@ -60,15 +67,23 @@ def identity_api() -> Generator[IdentityApi, None, None]:
             password_hash=hash_password("correct horse battery staple"),
             is_active=False,
         )
-        session.add_all([active_user, inactive_user])
+        session.add_all([active_user, member_user, inactive_user])
         session.flush()
         organization_id = organization.id
         active_user_id = active_user.id
+        member_user_id = member_user.id
         inactive_user_id = inactive_user.id
         session.commit()
 
     with TestClient(application) as client:
-        yield IdentityApi(client, settings, organization_id, active_user_id, inactive_user_id)
+        yield IdentityApi(
+            client,
+            settings,
+            organization_id,
+            active_user_id,
+            member_user_id,
+            inactive_user_id,
+        )
 
 
 def login(
@@ -133,10 +148,39 @@ def test_current_user_returns_authenticated_user(identity_api: IdentityApi) -> N
         "id": str(identity_api.active_user_id),
         "organization_id": str(identity_api.organization_id),
         "email": "admin@example.com",
+        "role": "admin",
         "is_active": True,
         "is_superuser": False,
     }
     assert "password_hash" not in response.json()
+
+
+def test_admin_can_list_only_organization_users(identity_api: IdentityApi) -> None:
+    token = login(identity_api).json()["access_token"]
+
+    response = identity_api.client.get(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert [user["email"] for user in response.json()] == [
+        "admin@example.com",
+        "inactive@example.com",
+        "member@example.com",
+    ]
+
+
+def test_member_cannot_list_organization_users(identity_api: IdentityApi) -> None:
+    token = login(identity_api, email="member@example.com").json()["access_token"]
+
+    response = identity_api.client.get(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Organization administrator role required"
 
 
 def test_current_user_rejects_invalid_token(identity_api: IdentityApi) -> None:
