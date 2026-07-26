@@ -27,5 +27,6 @@ class UserResponse(BaseModel):
     id: UUID
     organization_id: UUID
     email: str
+    role: str
     is_active: bool
     is_superuser: bool
