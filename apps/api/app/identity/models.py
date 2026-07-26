@@ -7,6 +7,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from app.database import Base
 from app.identity.normalization import normalize_email
 
+ROLE_MEMBER = "member"
+ROLE_ADMIN = "admin"
+
 
 class Organization(Base):
     """Tenant boundary for users and future portfolios."""
@@ -38,6 +41,7 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), default=ROLE_MEMBER, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -49,3 +53,9 @@ class User(Base):
     @validates("email")
     def _normalize_email(self, _key: str, email: str) -> str:
         return normalize_email(email)
+
+    @validates("role")
+    def _validate_role(self, _key: str, role: str) -> str:
+        if role not in {ROLE_MEMBER, ROLE_ADMIN}:
+            raise ValueError("unsupported organization role")
+        return role
