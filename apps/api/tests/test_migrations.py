@@ -33,6 +33,7 @@ def test_initial_migration_creates_identity_tables(tmp_path: Path) -> None:
             "organization_id",
             "email",
             "password_hash",
+            "role",
             "is_active",
             "is_superuser",
             "created_at",
