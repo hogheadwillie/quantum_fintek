@@ -1,9 +1,11 @@
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 from pydantic import SecretStr
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -20,6 +22,7 @@ from app.main import create_app
 class IdentityApi:
     client: TestClient
     settings: Settings
+    organization_id: UUID
     active_user_id: UUID
     inactive_user_id: UUID
 
@@ -48,7 +51,7 @@ def identity_api() -> Generator[IdentityApi, None, None]:
         organization = Organization(name="Quantum Industrial", slug="quantum-industrial")
         active_user = User(
             organization=organization,
-            email="admin@example.com",
+            email="Admin@Example.COM",
             password_hash=hash_password("correct horse battery staple"),
         )
         inactive_user = User(
@@ -58,87 +61,113 @@ def identity_api() -> Generator[IdentityApi, None, None]:
             is_active=False,
         )
         session.add_all([active_user, inactive_user])
-        session.commit()
+        session.flush()
+        organization_id = organization.id
         active_user_id = active_user.id
         inactive_user_id = inactive_user.id
+        session.commit()
 
     with TestClient(application) as client:
-        yield IdentityApi(client, settings, active_user_id, inactive_user_id)
+        yield IdentityApi(client, settings, organization_id, active_user_id, inactive_user_id)
 
 
-def test_login_and_current_user(identity_api: IdentityApi) -> None:
-    login = identity_api.client.post(
-        "/api/v1/identity/login",
-        json={
-            "organization_slug": "quantum-industrial",
-            "email": "ADMIN@EXAMPLE.COM",
-            "password": "correct horse battery staple",
-        },
+def login(
+    identity_api: IdentityApi,
+    *,
+    email: str = " ADMIN@EXAMPLE.COM ",
+    password: str = "correct horse battery staple",
+    organization_slug: str = "quantum-industrial",
+) -> Response:
+    return cast(
+        Response,
+        identity_api.client.post(
+            "/api/v1/identity/login",
+            json={
+                "organization_slug": organization_slug,
+                "email": email,
+                "password": password,
+            },
+        ),
     )
 
-    assert login.status_code == 200
-    token = login.json()["access_token"]
 
-    current_user = identity_api.client.get(
+def test_login_returns_bearer_token_for_normalized_email(identity_api: IdentityApi) -> None:
+    response = login(identity_api)
+
+    assert response.status_code == 200
+    assert response.json()["token_type"] == "bearer"
+    assert isinstance(response.json()["access_token"], str)
+
+
+def test_login_rejects_invalid_password(identity_api: IdentityApi) -> None:
+    response = login(identity_api, password="wrong-password")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_login_rejects_unknown_tenant(identity_api: IdentityApi) -> None:
+    response = login(identity_api, organization_slug="another-tenant")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_login_rejects_inactive_user(identity_api: IdentityApi) -> None:
+    response = login(identity_api, email="inactive@example.com")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_current_user_returns_authenticated_user(identity_api: IdentityApi) -> None:
+    token = login(identity_api).json()["access_token"]
+
+    response = identity_api.client.get(
         "/api/v1/identity/me",
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert current_user.status_code == 200
-    assert current_user.json() == {
+    assert response.status_code == 200
+    assert response.json() == {
         "id": str(identity_api.active_user_id),
-        "organization_id": current_user.json()["organization_id"],
+        "organization_id": str(identity_api.organization_id),
         "email": "admin@example.com",
         "is_active": True,
         "is_superuser": False,
     }
-    assert "password_hash" not in current_user.json()
+    assert "password_hash" not in response.json()
 
 
-@pytest.mark.parametrize(
-    ("email", "password", "organization_slug"),
-    [
-        ("admin@example.com", "wrong-password", "quantum-industrial"),
-        ("missing@example.com", "wrong-password", "quantum-industrial"),
-        ("inactive@example.com", "correct horse battery staple", "quantum-industrial"),
-        ("admin@example.com", "correct horse battery staple", "another-tenant"),
-    ],
-)
-def test_login_rejects_invalid_credentials(
-    identity_api: IdentityApi,
-    email: str,
-    password: str,
-    organization_slug: str,
-) -> None:
-    response = identity_api.client.post(
-        "/api/v1/identity/login",
-        json={
-            "organization_slug": organization_slug,
-            "email": email,
-            "password": password,
-        },
+def test_current_user_rejects_invalid_token(identity_api: IdentityApi) -> None:
+    response = identity_api.client.get(
+        "/api/v1/identity/me",
+        headers={"Authorization": "Bearer not-a-token"},
     )
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
 
 
-def test_current_user_rejects_invalid_and_unknown_subjects(identity_api: IdentityApi) -> None:
-    invalid = identity_api.client.get(
+def test_current_user_rejects_unknown_subject(identity_api: IdentityApi) -> None:
+    token = create_access_token(str(uuid4()), identity_api.settings)
+
+    response = identity_api.client.get(
         "/api/v1/identity/me",
-        headers={"Authorization": "Bearer not-a-token"},
-    )
-    missing_user_token = create_access_token(str(uuid4()), identity_api.settings)
-    missing = identity_api.client.get(
-        "/api/v1/identity/me",
-        headers={"Authorization": f"Bearer {missing_user_token}"},
-    )
-    inactive_token = create_access_token(str(identity_api.inactive_user_id), identity_api.settings)
-    inactive = identity_api.client.get(
-        "/api/v1/identity/me",
-        headers={"Authorization": f"Bearer {inactive_token}"},
+        headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert invalid.status_code == 401
-    assert missing.status_code == 401
-    assert inactive.status_code == 401
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_current_user_rejects_inactive_user(identity_api: IdentityApi) -> None:
+    token = create_access_token(str(identity_api.inactive_user_id), identity_api.settings)
+
+    response = identity_api.client.get(
+        "/api/v1/identity/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"

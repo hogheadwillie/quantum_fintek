@@ -41,6 +41,10 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
 [tool.ruff.format]
 quote-style = "double"
 

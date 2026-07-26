@@ -24,9 +24,9 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=160), nullable=False),
         sa.Column("slug", sa.String(length=80), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
+        sa.PrimaryKeyConstraint("id", name="pk_organizations"),
+        sa.UniqueConstraint("slug", name="uq_organizations_slug"),
     )
-    op.create_index("ix_organizations_slug", "organizations", ["slug"], unique=True)
 
     op.create_table(
         "users",
@@ -40,10 +40,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],
+            name="fk_users_organization_id_organizations",
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("organization_id", "email"),
+        sa.PrimaryKeyConstraint("id", name="pk_users"),
+        sa.UniqueConstraint("organization_id", "email", name="uq_users_organization_email"),
     )
     op.create_index("ix_users_email", "users", ["email"], unique=False)
     op.create_index("ix_users_organization_id", "users", ["organization_id"], unique=False)
@@ -54,5 +55,4 @@ def downgrade() -> None:
     op.drop_index("ix_users_organization_id", table_name="users")
     op.drop_index("ix_users_email", table_name="users")
     op.drop_table("users")
-    op.drop_index("ix_organizations_slug", table_name="organizations")
     op.drop_table("organizations")

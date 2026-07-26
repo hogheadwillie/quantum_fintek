@@ -31,8 +31,12 @@ def test_access_token_round_trip() -> None:
 
 
 def test_access_token_rejects_wrong_secret() -> None:
-    issuer = Settings(environment="test", jwt_secret=SecretStr("issuer-secret"))
-    verifier = Settings(environment="test", jwt_secret=SecretStr("verifier-secret"))
+    issuer = Settings(
+        environment="test", jwt_secret=SecretStr("issuer-secret-with-at-least-32-bytes")
+    )
+    verifier = Settings(
+        environment="test", jwt_secret=SecretStr("verifier-secret-with-at-least-32-bytes")
+    )
     token = create_access_token("user-123", issuer)
 
     with pytest.raises(jwt.InvalidSignatureError):

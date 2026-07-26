@@ -8,8 +8,9 @@ FastAPI backend for the QuantumFintek institutional trading platform.
 - Versioned API routing
 - Liveness and readiness endpoints
 - Tenant-scoped identity models and authentication
+- Tenant-scoped identity persistence with Alembic migrations
 - Argon2 password hashing and JWT bearer tokens
-- SQLAlchemy persistence and Alembic migrations
+- Bearer-token login and current-user endpoints
 - OpenAPI documentation outside production
 - Pytest coverage enforcement
 - Ruff linting and formatting
@@ -58,7 +59,7 @@ Create future schema revisions with:
 alembic revision --autogenerate -m "describe schema change"
 ```
 
-Review every generated migration before committing it.
+Review every generated migration before committing it. Use `alembic downgrade base` to reset a local development database.
 
 ## Validation
 
@@ -74,6 +75,7 @@ docker run --rm -p 8000:8000 quantum-fintek-api
 
 ## Planned modules
 
+- Refresh token rotation and session revocation
 - Role-based access control
 - Market data
 - Order and execution management

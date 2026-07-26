@@ -1,6 +1,5 @@
 from typing import Annotated
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -8,55 +7,56 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import get_session
 from app.identity.models import User
-from app.identity.repository import get_user_by_id, get_user_by_identity
+from app.identity.repository import TenantScopedUserRepository
 from app.identity.schemas import LoginRequest, TokenResponse, UserResponse
-from app.identity.security import create_access_token, decode_access_token, verify_password
+from app.identity.service import AuthenticationError, AuthenticationService
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/identity/login")
-_UNAUTHORIZED = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Invalid authentication credentials",
-    headers={"WWW-Authenticate": "Bearer"},
-)
+
+def _unauthorized() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def create_identity_router(settings: Settings) -> APIRouter:
     """Create tenant-scoped authentication routes."""
 
     router = APIRouter(prefix=f"{settings.api_prefix}/identity", tags=["identity"])
+    oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix}/identity/login")
+
+    def get_authentication_service(
+        session: Annotated[Session, Depends(get_session)],
+    ) -> AuthenticationService:
+        return AuthenticationService(
+            settings=settings,
+            users=TenantScopedUserRepository(session),
+        )
 
     def get_current_user(
         token: Annotated[str, Depends(oauth2_scheme)],
-        session: Annotated[Session, Depends(get_session)],
+        authentication: Annotated[AuthenticationService, Depends(get_authentication_service)],
     ) -> User:
         try:
-            subject = decode_access_token(token, settings)
-        except jwt.InvalidTokenError as error:
-            raise _UNAUTHORIZED from error
-
-        user = get_user_by_id(session, subject)
-        if user is None or not user.is_active:
-            raise _UNAUTHORIZED
-        return user
+            return authentication.authenticate_token(token)
+        except AuthenticationError as error:
+            raise _unauthorized() from error
 
     @router.post("/login", response_model=TokenResponse)
     def login(
         credentials: LoginRequest,
-        session: Annotated[Session, Depends(get_session)],
+        authentication: Annotated[AuthenticationService, Depends(get_authentication_service)],
     ) -> TokenResponse:
-        user = get_user_by_identity(
-            session,
+        user = authentication.authenticate_user(
             organization_slug=credentials.organization_slug,
             email=credentials.email,
+            password=credentials.password,
         )
-        if (
-            user is None
-            or not user.is_active
-            or not verify_password(credentials.password, user.password_hash)
-        ):
-            raise _UNAUTHORIZED
+        if user is None:
+            raise _unauthorized()
 
-        return TokenResponse(access_token=create_access_token(str(user.id), settings))
+        return TokenResponse(access_token=authentication.create_user_access_token(user))
 
     @router.get("/me", response_model=UserResponse)
     def me(current_user: Annotated[User, Depends(get_current_user)]) -> User:

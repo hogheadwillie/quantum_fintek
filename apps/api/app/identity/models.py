@@ -2,19 +2,21 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database import Base
+from app.identity.normalization import normalize_email
 
 
 class Organization(Base):
     """Tenant boundary for users and future portfolios."""
 
     __tablename__ = "organizations"
+    __table_args__ = (UniqueConstraint("slug", name="uq_organizations_slug"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
-    slug: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(80), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
@@ -26,7 +28,9 @@ class User(Base):
     """Authenticated identity belonging to one organization."""
 
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("organization_id", "email"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "email", name="uq_users_organization_email"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(
@@ -41,3 +45,7 @@ class User(Base):
     )
 
     organization: Mapped[Organization] = relationship(back_populates="users")
+
+    @validates("email")
+    def _normalize_email(self, _key: str, email: str) -> str:
+        return normalize_email(email)
