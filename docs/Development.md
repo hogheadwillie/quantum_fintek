@@ -62,6 +62,102 @@ Stop the Traefik-enabled stack:
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml down
 ```
 
+## Frontend routing
+
+The Next.js app (`apps/web`) is planned to sit behind the same Traefik entrypoint as the API. Use **one** of the patterns below; do not mix them in production without careful cookie/CORS design.
+
+### Pattern A — Host-based (recommended for local)
+
+| Host | Backend |
+|------|---------|
+| `http://app.localhost` | Next.js web (`web:3000`) |
+| `http://api.localhost` | FastAPI (`api:8000`) |
+
+**Frontend env (browser-visible):**
+
+```bash
+NEXT_PUBLIC_API_URL=http://api.localhost
+```
+
+**CORS on API** must allow the web origin:
+
+```bash
+CORS_ORIGINS=http://app.localhost,http://localhost:3000
+```
+
+Traefik labels (already sketched in `docker-compose.traefik.yml` for the future `web` service):
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.docker.network=quantum-net
+  - traefik.http.routers.web.rule=Host(`app.localhost`)
+  - traefik.http.routers.web.entrypoints=web
+  - traefik.http.services.web-svc.loadbalancer.server.port=3000
+```
+
+### Pattern B — Path-based (single host)
+
+| Path | Backend |
+|------|---------|
+| `http://localhost/` | Next.js web |
+| `http://localhost/api` | FastAPI (strip `/api` prefix) |
+
+**Frontend env:**
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost/api
+```
+
+API PathPrefix route + strip middleware is already active in the Traefik overlay. Web would use a low-priority catch-all Host rule or `PathPrefix(`/`)` with priority lower than `/api`.
+
+Priority tip in Traefik v3:
+
+```yaml
+- traefik.http.routers.api-path.priority=100
+- traefik.http.routers.web.priority=1
+```
+
+### Local frontend without Docker
+
+While iterating on UI only:
+
+```bash
+cd apps/web
+npm install
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+# or with Traefik up:
+# NEXT_PUBLIC_API_URL=http://api.localhost npm run dev
+```
+
+Open http://localhost:3000. Next.js talks to the API using `NEXT_PUBLIC_API_URL`.
+
+### Enabling the web service in Compose
+
+1. Uncomment the `web` service in `docker-compose.yml` (and add `apps/web/Dockerfile` when ready).
+2. Ensure Traefik labels for `web` are present in `docker-compose.traefik.yml`.
+3. Set:
+
+```bash
+NEXT_PUBLIC_API_URL=http://api.localhost
+CORS_ORIGINS=http://app.localhost,http://localhost:3000
+```
+
+4. Start with the Traefik overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
+```
+
+### Production routing sketch
+
+| Public URL | Service |
+|------------|---------|
+| `https://app.quantumfintek.example` | web |
+| `https://api.quantumfintek.example` | api |
+
+Use Traefik `websecure` entrypoint + Let's Encrypt cert resolver. Prefer host-based split over path-based for clearer TLS certs, cookies, and CORS.
+
 ## Local Setup (without Docker)
 
 ### 1. Clone
@@ -92,7 +188,7 @@ bash scripts/bootstrap.sh
 ```bash
 cd apps/web
 npm install
-npm run dev
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 ```
 
 ### 4. API
@@ -127,6 +223,7 @@ uvicorn app.main:app --reload --port 8000
 | postgres  | postgres:16-alpine     | 5432  | Primary database           |
 | redis     | redis:7-alpine         | 6379  | Cache / sessions / queues  |
 | traefik   | traefik:v3.3 (overlay) | 80 / 8080 | Optional reverse proxy  |
+| web       | planned                | 3000  | Next.js frontend           |
 
 ## Next Milestones
 
