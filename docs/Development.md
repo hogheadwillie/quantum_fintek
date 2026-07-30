@@ -31,6 +31,37 @@ docker compose down           # stop
 docker compose down -v        # stop + remove volumes
 ```
 
+## Traefik reverse proxy (optional overlay)
+
+Traefik is provided as an **opt-in** compose overlay so the default stack stays light.
+
+```bash
+# Start core stack + Traefik
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
+```
+
+| URL | Target |
+|-----|--------|
+| http://api.localhost | API via Traefik (Host rule) |
+| http://localhost/api | API via Traefik (PathPrefix + strip) |
+| http://localhost:8000 | API direct (still published) |
+| http://localhost:8080 | Traefik dashboard (loopback only) |
+| http://traefik.localhost | Dashboard via Traefik Host rule |
+
+Notes:
+
+- `*.localhost` resolves to `127.0.0.1` on modern OS setups (no hosts file edit needed).
+- Postgres and Redis are **not** exposed through Traefik.
+- Docker socket is mounted **read-only**.
+- `exposedByDefault=false` — only labeled services are routed.
+- For production TLS, extend the overlay with `websecure` entrypoint + ACME cert resolver (not enabled in local overlay).
+
+Stop the Traefik-enabled stack:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml down
+```
+
 ## Local Setup (without Docker)
 
 ### 1. Clone
@@ -95,6 +126,7 @@ uvicorn app.main:app --reload --port 8000
 | api       | `apps/api/Dockerfile`  | 8000  | FastAPI backend            |
 | postgres  | postgres:16-alpine     | 5432  | Primary database           |
 | redis     | redis:7-alpine         | 6379  | Cache / sessions / queues  |
+| traefik   | traefik:v3.3 (overlay) | 80 / 8080 | Optional reverse proxy  |
 
 ## Next Milestones
 
@@ -103,4 +135,5 @@ uvicorn app.main:app --reload --port 8000
 3. Basic portfolio optimizer endpoints
 4. Anomaly detection API routes
 5. Next.js frontend Dockerfile + compose service
-6. CMMC control evidence collection start
+6. Production Traefik TLS (ACME) profile
+7. CMMC control evidence collection start
