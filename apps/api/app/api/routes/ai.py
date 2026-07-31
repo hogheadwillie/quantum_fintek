@@ -1,11 +1,14 @@
-"""AI intelligence API routes."""
+"""AI intelligence API routes (JWT protected)."""
 
 from __future__ import annotations
 
 import numpy as np
 from ai_intel import AnomalyDetector
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+
+from app.api.deps import get_current_payload
+from app.identity.security import TokenPayload
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -22,7 +25,10 @@ class AnomalyResponse(BaseModel):
 
 
 @router.post("/anomaly", response_model=AnomalyResponse)
-def detect_anomalies(body: AnomalyRequest) -> AnomalyResponse:
+def detect_anomalies(
+    body: AnomalyRequest,
+    _user: TokenPayload = Depends(get_current_payload),
+) -> AnomalyResponse:
     X = np.array(body.samples, dtype=float)
     detector = AnomalyDetector(contamination=body.contamination)
     detector.fit(X)

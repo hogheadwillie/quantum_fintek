@@ -8,10 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import ai, auth, quant
 from app.core.config import get_settings
 from app.core.redis import close_redis
+from app.db.session import init_db
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    await init_db()
     yield
     await close_redis()
 
@@ -21,7 +23,7 @@ settings = get_settings()
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.3.0-alpha",
+    version="0.4.0-alpha",
     lifespan=lifespan,
 )
 
@@ -40,23 +42,19 @@ app.include_router(ai.router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.3.0-alpha"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.4.0-alpha"}
 
 
 @app.get("/")
 def root():
     return {
         "name": "QuantumFintek",
-        "version": "0.3.0-alpha",
-        "domains": [
-            "trading",
-            "quantitative",
-            "ai-intelligence",
-            "enterprise",
-            "security",
-        ],
+        "version": "0.4.0-alpha",
+        "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security"],
         "endpoints": {
-            "auth": "/auth/token",
+            "register": "/auth/register",
+            "login": "/auth/login",
+            "me": "/auth/me",
             "quant_optimize": "/quant/optimize",
             "quant_risk": "/quant/risk",
             "ai_anomaly": "/ai/anomaly",

@@ -1,18 +1,12 @@
 # QuantumFintek™
 
-Enterprise quantitative finance platform combining:
+Enterprise quantitative finance platform combining quantitative analytics, trading infrastructure, AI intelligence, quantum-ready optimization, and enterprise security.
 
-- Quantitative analytics
-- Trading infrastructure
-- AI financial intelligence
-- Quantum-ready optimization research
-- Enterprise security architecture (JWT + CMMC-aligned controls)
+## Status
 
-## Development Status
+**v0.4.0-alpha** — register/login, JWT-protected quant/AI, web auth UI
 
-**Current milestone: v0.3.0-alpha — API routes + web console + Redis sessions**
-
-## Quick Start
+## Quick start
 
 ```bash
 cp .env.example .env
@@ -21,30 +15,22 @@ docker compose up --build
 
 | Service | URL |
 |---------|-----|
+| Web | http://localhost:3000 |
 | API | http://localhost:8000 |
 | API docs | http://localhost:8000/docs |
-| Web | http://localhost:3000 |
-| Postgres | localhost:5432 |
-| Redis | localhost:6379 |
 
-With Traefik:
+## Auth flow
+
+1. `POST /auth/register` — create user (bcrypt password)
+2. `POST /auth/login` — access + refresh JWT (refresh stored in Redis)
+3. `GET /auth/me` — current user (Bearer)
+4. `POST /quant/*` and `POST /ai/*` require Bearer token
+
+## Traefik (optional)
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 ```
 
-| Host | Target |
-|------|--------|
-| http://app.localhost | Web |
-| http://api.localhost | API |
-
-## Core endpoints
-
-- `POST /auth/token` — issue JWT access + refresh (Redis-backed refresh)
-- `POST /auth/refresh` — rotate refresh token
-- `POST /quant/optimize` — mean-variance weights
-- `POST /quant/risk` — VaR / CVaR / volatility
-- `POST /quant/qubo` — quantum-ready QUBO payload
-- `POST /ai/anomaly` — Isolation Forest anomaly detection
-
-See [`docs/Development.md`](docs/Development.md) for full setup and frontend routing.
+- http://app.localhost → web
+- http://api.localhost → api

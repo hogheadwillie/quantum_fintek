@@ -54,6 +54,33 @@ p {
   margin-top: 12px;
 }
 
+.form {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+input {
+  background: #0a0f1c;
+  border: 1px solid #243152;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 1rem;
+}
+
+.hint {
+  color: #6f83a8;
+  font-size: 0.8rem;
+}
+
 button {
   background: var(--accent);
   color: white;
@@ -62,6 +89,10 @@ button {
   padding: 10px 14px;
   font-weight: 600;
   cursor: pointer;
+}
+
+button.secondary {
+  background: #2a3a5c;
 }
 
 button:disabled {
