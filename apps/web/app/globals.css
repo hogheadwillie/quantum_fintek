@@ -1,0 +1,100 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #121a2f;
+  --text: #e8eefc;
+  --muted: #9db0d0;
+  --accent: #5b8cff;
+  --ok: #3dd68c;
+  --bad: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: radial-gradient(1200px 600px at 20% -10%, #1a2748 0%, var(--bg) 55%);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+h1 {
+  font-size: 2rem;
+  margin: 0 0 8px;
+}
+
+p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.card {
+  background: color-mix(in srgb, var(--panel) 92%, black);
+  border: 1px solid #243152;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 24px;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+pre {
+  background: #0a0f1c;
+  border-radius: 8px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #1e2a45;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #1d2b4d;
+  color: var(--muted);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.bad {
+  color: var(--bad);
+}

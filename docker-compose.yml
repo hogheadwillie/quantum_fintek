@@ -13,7 +13,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://app.localhost,http://api.localhost,http://localhost}
     volumes:
-      # Hot-reload for local development
       - ./apps/api/app:/app/apps/api/app
       - ./packages:/app/packages
     depends_on:
@@ -21,6 +20,23 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    restart: unless-stopped
+    networks:
+      - quantum-net
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://api.localhost}
+    container_name: quantum-fintek-web
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://api.localhost}
+    depends_on:
+      - api
     restart: unless-stopped
     networks:
       - quantum-net
@@ -56,26 +72,6 @@ services:
     restart: unless-stopped
     networks:
       - quantum-net
-
-  # Next.js frontend — enable when Dockerfile exists under apps/web/
-  # Routing: see docs/Development.md "Frontend routing"
-  #   Host-based:  app.localhost → web, api.localhost → api
-  #   Path-based:  / → web, /api → api
-  # web:
-  #   build:
-  #     context: .
-  #     dockerfile: apps/web/Dockerfile
-  #   container_name: quantum-fintek-web
-  #   ports:
-  #     - "${WEB_PORT:-3000}:3000"
-  #   environment:
-  #     # Browser calls this URL (must be reachable from the user's machine)
-  #     - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://api.localhost}
-  #   depends_on:
-  #     - api
-  #   restart: unless-stopped
-  #   networks:
-  #     - quantum-net
 
 volumes:
   postgres_data:

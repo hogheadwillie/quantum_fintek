@@ -3,20 +3,11 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 #
-# Access (current):
-#   API via Traefik:  http://api.localhost
-#                     http://localhost/api  (PathPrefix + strip)
-#   Traefik dashboard: http://localhost:8080  (bound to loopback only)
-#   Direct API (still available): http://localhost:8000
-#
-# Frontend routing (when `web` service is enabled):
-#   Host-based (recommended):  http://app.localhost  → web:3000
-#                              http://api.localhost  → api:8000
-#   Path-based alternative:    http://localhost/     → web:3000
-#                              http://localhost/api  → api:8000
-#
-# Set NEXT_PUBLIC_API_URL and CORS_ORIGINS accordingly (see docs/Development.md).
-# Postgres and Redis remain internal to quantum-net (no Traefik labels).
+# Access:
+#   http://app.localhost  → web
+#   http://api.localhost  → api
+#   http://localhost/api  → api (PathPrefix + strip)
+#   http://localhost:8080 → Traefik dashboard (loopback)
 
 services:
   traefik:
@@ -34,7 +25,6 @@ services:
       - --accesslog=true
     ports:
       - "${TRAEFIK_HTTP_PORT:-80}:80"
-      # Dashboard only on loopback for local safety
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -50,34 +40,24 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=quantum-net
-      # Host-based route (preferred for local)
       - traefik.http.routers.api.rule=Host(`api.localhost`)
       - traefik.http.routers.api.entrypoints=web
       - traefik.http.routers.api.service=api-svc
       - traefik.http.routers.api.priority=10
-      # Path-based route (optional alternate / single-host setups)
       - traefik.http.routers.api-path.rule=PathPrefix(`/api`)
       - traefik.http.routers.api-path.entrypoints=web
       - traefik.http.routers.api-path.service=api-svc
       - traefik.http.routers.api-path.middlewares=api-stripprefix
       - traefik.http.routers.api-path.priority=100
       - traefik.http.middlewares.api-stripprefix.stripprefix.prefixes=/api
-      # Backend port inside the container
       - traefik.http.services.api-svc.loadbalancer.server.port=8000
 
-  # Uncomment when apps/web is containerized and the web service exists in docker-compose.yml
-  # web:
-  #   labels:
-  #     - traefik.enable=true
-  #     - traefik.docker.network=quantum-net
-  #     # Pattern A: host-based frontend
-  #     - traefik.http.routers.web.rule=Host(`app.localhost`)
-  #     - traefik.http.routers.web.entrypoints=web
-  #     - traefik.http.routers.web.service=web-svc
-  #     - traefik.http.routers.web.priority=10
-  #     # Pattern B (optional): path catch-all on localhost — keep priority lower than /api
-  #     # - traefik.http.routers.web-path.rule=Host(`localhost`) && PathPrefix(`/`)
-  #     # - traefik.http.routers.web-path.entrypoints=web
-  #     # - traefik.http.routers.web-path.service=web-svc
-  #     # - traefik.http.routers.web-path.priority=1
-  #     - traefik.http.services.web-svc.loadbalancer.server.port=3000
+  web:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=quantum-net
+      - traefik.http.routers.web.rule=Host(`app.localhost`)
+      - traefik.http.routers.web.entrypoints=web
+      - traefik.http.routers.web.service=web-svc
+      - traefik.http.routers.web.priority=10
+      - traefik.http.services.web-svc.loadbalancer.server.port=3000
