@@ -142,7 +142,7 @@ async def verify_for_forward_auth(
     """
     response = Response(status_code=status.HTTP_200_OK, content=b"")
     response.headers["X-QF-User-Id"] = payload.sub
-    response.headers["X-QF-Roles"] = ",".joinjoin(payload.roles or [])
+    response.headers["X-QF-Roles"] = ",".join(payload.roles or [])
     if payload.org_id:
         response.headers["X-QF-Org-Id"] = payload.org_id
     return response
