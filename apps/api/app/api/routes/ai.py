@@ -1,4 +1,4 @@
-"""AI intelligence API routes (JWT protected)."""
+"""AI intelligence API routes (JWT + role protected)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ from ai_intel import AnomalyDetector
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_payload
+from app.api.deps import require_roles
 from app.identity.security import TokenPayload
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+Analyst = Depends(require_roles("analyst", "quant"))
 
 
 class AnomalyRequest(BaseModel):
@@ -19,7 +21,7 @@ class AnomalyRequest(BaseModel):
 
 
 class AnomalyResponse(BaseModel):
-    labels: list[int]  # -1 anomaly, 1 inlier
+    labels: list[int]
     scores: list[float]
     n_anomalies: int
 
@@ -27,7 +29,7 @@ class AnomalyResponse(BaseModel):
 @router.post("/anomaly", response_model=AnomalyResponse)
 def detect_anomalies(
     body: AnomalyRequest,
-    _user: TokenPayload = Depends(get_current_payload),
+    _user: TokenPayload = Analyst,
 ) -> AnomalyResponse:
     X = np.array(body.samples, dtype=float)
     detector = AnomalyDetector(contamination=body.contamination)

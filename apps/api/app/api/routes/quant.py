@@ -1,4 +1,4 @@
-"""Quantitative analytics API routes (JWT protected)."""
+"""Quantitative analytics API routes (JWT + role protected)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from quant_core import PortfolioOptimizer, RiskMetrics
 
-from app.api.deps import get_current_payload
+from app.api.deps import require_roles
 from app.identity.security import TokenPayload
 
 router = APIRouter(prefix="/quant", tags=["quant"])
+
+Analyst = Depends(require_roles("analyst", "quant"))
 
 
 class OptimizeRequest(BaseModel):
@@ -44,7 +46,7 @@ class QuboRequest(BaseModel):
 @router.post("/optimize", response_model=OptimizeResponse)
 def optimize_portfolio(
     body: OptimizeRequest,
-    _user: TokenPayload = Depends(get_current_payload),
+    _user: TokenPayload = Analyst,
 ) -> OptimizeResponse:
     mu = np.array(body.expected_returns, dtype=float)
     cov = np.array(body.covariance, dtype=float)
@@ -58,7 +60,7 @@ def optimize_portfolio(
 @router.post("/risk", response_model=RiskResponse)
 def compute_risk(
     body: RiskRequest,
-    _user: TokenPayload = Depends(get_current_payload),
+    _user: TokenPayload = Analyst,
 ) -> RiskResponse:
     r = np.array(body.returns, dtype=float)
     return RiskResponse(
@@ -71,7 +73,7 @@ def compute_risk(
 @router.post("/qubo")
 def quantum_qubo(
     body: QuboRequest,
-    _user: TokenPayload = Depends(get_current_payload),
+    _user: TokenPayload = Analyst,
 ) -> dict:
     mu = np.array(body.expected_returns, dtype=float)
     cov = np.array(body.covariance, dtype=float)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -36,3 +38,22 @@ async def get_current_payload(
         return await tokens.validate_access_token(creds.credentials)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+
+def require_roles(*allowed: str) -> Callable:
+    """Dependency factory: require at least one of the given roles (or admin)."""
+
+    allowed_set = set(allowed)
+
+    async def _checker(payload: TokenPayload = Depends(get_current_payload)) -> TokenPayload:
+        roles = set(payload.roles or [])
+        if "admin" in roles:
+            return payload
+        if roles.isdisjoint(allowed_set):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of roles: {', '.join(sorted(allowed_set))}",
+            )
+        return payload
+
+    return _checker

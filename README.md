@@ -1,10 +1,16 @@
 # QuantumFintek™
 
-Enterprise quantitative finance platform combining quantitative analytics, trading infrastructure, AI intelligence, quantum-ready optimization, and enterprise security.
+Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/RBAC security, and quantum-ready optimization hooks.
 
 ## Status
 
-**v0.4.0-alpha** — register/login, JWT-protected quant/AI, web auth UI
+**v0.5.0-alpha**
+
+- Alembic migrations (identity schema)
+- Register / login (bcrypt) + Redis refresh tokens
+- RBAC: quant & AI routes require `analyst` (or `admin`)
+- Web console: auth, portfolio optimize, risk (VaR/CVaR), anomaly detection
+- Traefik local + production TLS overlays
 
 ## Quick start
 
@@ -17,20 +23,28 @@ docker compose up --build
 |---------|-----|
 | Web | http://localhost:3000 |
 | API | http://localhost:8000 |
-| API docs | http://localhost:8000/docs |
+| Docs | http://localhost:8000/docs |
 
-## Auth flow
-
-1. `POST /auth/register` — create user (bcrypt password)
-2. `POST /auth/login` — access + refresh JWT (refresh stored in Redis)
-3. `GET /auth/me` — current user (Bearer)
-4. `POST /quant/*` and `POST /ai/*` require Bearer token
-
-## Traefik (optional)
+## Traefik
 
 ```bash
+# Local HTTP
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
+
+# Production TLS (see docs/TLS.md)
+docker compose -f docker-compose.yml -f docker-compose.traefik.tls.yml up -d --build
 ```
 
-- http://app.localhost → web
-- http://api.localhost → api
+## Auth & RBAC
+
+1. Register → Login (token includes `user`, `analyst`)
+2. `/quant/*` and `/ai/*` require Bearer + analyst/admin role
+3. Refresh tokens stored in Redis with rotation
+
+## Migrations
+
+On API startup, Alembic runs `upgrade head`. Manual:
+
+```bash
+cd apps/api && alembic upgrade head
+```

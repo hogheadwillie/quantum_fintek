@@ -23,7 +23,7 @@ settings = get_settings()
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.4.0-alpha",
+    version="0.5.0-alpha",
     lifespan=lifespan,
 )
 
@@ -42,14 +42,14 @@ app.include_router(ai.router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.4.0-alpha"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.5.0-alpha"}
 
 
 @app.get("/")
 def root():
     return {
         "name": "QuantumFintek",
-        "version": "0.4.0-alpha",
+        "version": "0.5.0-alpha",
         "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security"],
         "endpoints": {
             "register": "/auth/register",

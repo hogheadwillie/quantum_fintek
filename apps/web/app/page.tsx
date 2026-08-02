@@ -5,16 +5,34 @@ import { FormEvent, useEffect, useState } from 'react';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const TOKEN_KEY = 'qf_access_token';
 
+function sampleReturns(n = 252): number[] {
+  const out: number[] = [];
+  let x = 0.001;
+  for (let i = 0; i < n; i++) {
+    x = 0.0005 + (Math.random() - 0.48) * 0.02;
+    out.push(x);
+  }
+  return out;
+}
+
+function sampleMatrix(rows = 40, cols = 4): number[][] {
+  return Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => (Math.random() - 0.5) * 2),
+  );
+}
+
 export default function HomePage() {
-  const [token, setToken] = useState<string>('');
+  const [token, setToken] = useState('');
   const [email, setEmail] = useState('analyst@quantumfintek.local');
   const [username, setUsername] = useState('analyst');
   const [password, setPassword] = useState('changeme123');
-  const [me, setMe] = useState<string>('');
-  const [quant, setQuant] = useState<string>('');
+  const [me, setMe] = useState('');
+  const [quant, setQuant] = useState('');
+  const [risk, setRisk] = useState('');
+  const [anomaly, setAnomaly] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>('');
-  const [info, setInfo] = useState<string>('');
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem(TOKEN_KEY);
@@ -30,6 +48,8 @@ export default function HomePage() {
     setToken('');
     setMe('');
     setQuant('');
+    setRisk('');
+    setAnomaly('');
     localStorage.removeItem(TOKEN_KEY);
   }
 
@@ -45,7 +65,7 @@ export default function HomePage() {
         body: JSON.stringify({ email, username, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
       setInfo(`Registered ${data.username}. You can log in.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Register failed');
@@ -66,9 +86,9 @@ export default function HomePage() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
       saveToken(data.access_token);
-      setInfo('Logged in.');
+      setInfo('Logged in (roles: user, analyst).');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -76,15 +96,28 @@ export default function HomePage() {
     }
   }
 
+  async function authFetch(path: string, init?: RequestInit) {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers || {}),
+      },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
   async function loadMe() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_URL}/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const data = await authFetch('/auth/me');
       setMe(JSON.stringify(data, null, 2));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load profile');
@@ -97,12 +130,8 @@ export default function HomePage() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_URL}/quant/optimize`, {
+      const data = await authFetch('/quant/optimize', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({
           expected_returns: [0.05, 0.07, 0.06],
           covariance: [
@@ -113,8 +142,6 @@ export default function HomePage() {
           risk_free_rate: 0.02,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       setQuant(JSON.stringify(data, null, 2));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Optimize failed');
@@ -123,13 +150,44 @@ export default function HomePage() {
     }
   }
 
+  async function runRisk() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await authFetch('/quant/risk', {
+        method: 'POST',
+        body: JSON.stringify({ returns: sampleReturns(), confidence: 0.95 }),
+      });
+      setRisk(JSON.stringify(data, null, 2));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Risk failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runAnomaly() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await authFetch('/ai/anomaly', {
+        method: 'POST',
+        body: JSON.stringify({ samples: sampleMatrix(), contamination: 0.08 }),
+      });
+      setAnomaly(JSON.stringify(data, null, 2));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Anomaly failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main>
-      <span className="badge">v0.4.0-alpha</span>
+      <span className="badge">v0.5.0-alpha</span>
       <h1>QuantumFintek</h1>
       <p>
-        Enterprise quantitative finance console. API:{' '}
-        <code>{API_URL}</code>
+        Enterprise quantitative finance console. API: <code>{API_URL}</code>
       </p>
 
       {!token ? (
@@ -165,33 +223,60 @@ export default function HomePage() {
           </form>
         </div>
       ) : (
-        <div className="card">
-          <strong>Session</strong>
-          <p className="ok">Authenticated</p>
-          <div className="row">
-            <button onClick={loadMe} disabled={loading}>
-              GET /auth/me
-            </button>
-            <button onClick={runOptimize} disabled={loading}>
-              POST /quant/optimize
-            </button>
-            <button className="secondary" onClick={logout} disabled={loading}>
-              Logout
-            </button>
+        <>
+          <div className="card">
+            <strong>Session</strong>
+            <p className="ok">Authenticated (analyst RBAC)</p>
+            <div className="row">
+              <button onClick={loadMe} disabled={loading}>
+                Profile
+              </button>
+              <button className="secondary" onClick={logout} disabled={loading}>
+                Logout
+              </button>
+            </div>
+            {me && <pre>{me}</pre>}
           </div>
-          {me && (
-            <>
-              <p className="ok">Profile</p>
-              <pre>{me}</pre>
-            </>
-          )}
-          {quant && (
-            <>
-              <p className="ok">Portfolio weights</p>
-              <pre>{quant}</pre>
-            </>
-          )}
-        </div>
+
+          <div className="card">
+            <strong>Quant lab</strong>
+            <div className="row">
+              <button onClick={runOptimize} disabled={loading}>
+                Optimize portfolio
+              </button>
+              <button onClick={runRisk} disabled={loading}>
+                Risk (VaR / CVaR)
+              </button>
+            </div>
+            {quant && (
+              <>
+                <p className="ok">Weights</p>
+                <pre>{quant}</pre>
+              </>
+            )}
+            {risk && (
+              <>
+                <p className="ok">Risk metrics</p>
+                <pre>{risk}</pre>
+              </>
+            )}
+          </div>
+
+          <div className="card">
+            <strong>AI intelligence</strong>
+            <div className="row">
+              <button onClick={runAnomaly} disabled={loading}>
+                Anomaly detection
+              </button>
+            </div>
+            {anomaly && (
+              <>
+                <p className="ok">Anomaly result</p>
+                <pre>{anomaly}</pre>
+              </>
+            )}
+          </div>
+        </>
       )}
 
       {info && <p className="ok">{info}</p>}
