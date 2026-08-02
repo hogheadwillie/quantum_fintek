@@ -27,7 +27,7 @@ services:
       - --providers.docker.network=quantum-net
       - --entrypoints.web.address=:80
       - --api.dashboard=true
-      --api.insecure=true
+      - --api.insecure=true
       - --log.level=INFO
       - --accesslog=true
     ports:
