@@ -17,8 +17,8 @@ bearer = HTTPBearer(auto_error=False)
 async def get_token_service(
     settings: Settings = Depends(get_settings),
 ) -> TokenService:
-    redis = await get_redis()
-    store = SessionStore(redis)
+    redis_client = await get_redis()
+    store = SessionStore(redis_client, prefix=settings.redis_key_prefix)
     return TokenService(
         secret_key=settings.secret_key,
         algorithm=settings.jwt_algorithm,

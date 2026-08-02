@@ -1,0 +1,85 @@
+# Optional 3-node Redis Cluster for denylist sharding tests
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up -d --build
+#
+# API env (set in .env or override):
+#   REDIS_MODE=cluster
+#   REDIS_CLUSTER_NODES=redis-node-1:6379,redis-node-2:6379,redis-node-3:6379
+#   # leave REDIS_URL unused or point at any startup node
+#
+# Init (first time, after nodes are up):
+#   docker compose -f docker-compose.redis-cluster.yml exec redis-node-1 \
+#     redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 \
+#     --cluster-replicas 0 --cluster-yes
+#
+# Note: disables the single-node `redis` service from the base compose when merged
+# by replacing it with cluster nodes. Point API at cluster nodes.
+
+services:
+  redis:
+    # Keep base redis off when using cluster overlay
+    profiles: ["standalone-redis"]
+
+  redis-node-1:
+    image: redis:7-alpine
+    container_name: quantum-fintek-redis-1
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --protected-mode no
+    volumes:
+      - redis_cluster_1:/data
+    networks:
+      - quantum-net
+
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: quantum-fintek-redis-2
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --protected-mode no
+    volumes:
+      - redis_cluster_2:/data
+    networks:
+      - quantum-net
+
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: quantum-fintek-redis-3
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --protected-mode no
+    volumes:
+      - redis_cluster_3:/data
+    networks:
+      - quantum-net
+
+  api:
+    environment:
+      - REDIS_MODE=cluster
+      - REDIS_CLUSTER_NODES=redis-node-1:6379,redis-node-2:6379,redis-node-3:6379
+      - REDIS_URL=redis://redis-node-1:6379/0
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+
+volumes:
+  redis_cluster_1:
+  redis_cluster_2:
+  redis_cluster_3:
