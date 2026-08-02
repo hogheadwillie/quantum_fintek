@@ -33,12 +33,22 @@ docker compose down -v
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 ```
 
-| URL | Target |
-|-----|--------|
-| http://app.localhost | Web |
-| http://api.localhost | API |
-| http://localhost/api | API (PathPrefix + strip) |
-| http://localhost:8080 | Traefik dashboard (loopback) |
+| URL | Target | Middleware |
+|-----|--------|------------|
+| http://app.localhost | Web | rate limit + security headers |
+| http://api.localhost | API | rate limit + security headers |
+| http://localhost/api | API | rate limit + strip `/api` + headers |
+| http://traefik.localhost | Dashboard | BasicAuth |
+| http://127.0.0.1:8080 | Dashboard | loopback only |
+
+Set dashboard credentials in `.env`:
+
+```bash
+htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
+# TRAEFIK_BASIC_AUTH=admin:$$2y$$05$$...
+```
+
+Full middleware notes: [Traefik.md](./Traefik.md). Production TLS: [TLS.md](./TLS.md).
 
 ## Frontend routing
 
@@ -65,14 +75,19 @@ NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 ## API examples
 
 ```bash
-# Tokens (refresh stored in Redis)
-curl -s -X POST http://localhost:8000/auth/token \
+# Register + login (preferred)
+curl -s -X POST http://localhost:8000/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"subject":"demo-user","roles":["analyst"]}'
+  -d '{"email":"analyst@example.com","username":"analyst","password":"changeme123"}'
 
-# Portfolio optimize
+curl -s -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"analyst@example.com","password":"changeme123"}'
+
+# Portfolio optimize (Bearer required)
 curl -s -X POST http://localhost:8000/quant/optimize \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"expected_returns":[0.05,0.07,0.06],"covariance":[[0.01,0.002,0.001],[0.002,0.015,0.003],[0.001,0.003,0.012]]}'
 ```
 
@@ -81,14 +96,9 @@ curl -s -X POST http://localhost:8000/quant/optimize \
 - `apps/api` — FastAPI
 - `apps/web` — Next.js
 - `packages/quant-core`, `packages/ai-intel` — shared libraries
-- `docs/` — architecture, security, CMMC
+- `docs/` — architecture, security, CMMC, Traefik
 - `infrastructure/` — k8s / terraform stubs
 
-## Next milestones
+## Status
 
-1. Alembic migrations + wire User model to auth
-2. Password hashing + real login flow
-3. Protect quant/AI routes with JWT dependency
-4. Expand web dashboard (charts, auth UI)
-5. Production Traefik TLS (ACME) profile
-6. CMMC evidence collection automation
+v0.5.x — Alembic, JWT/RBAC, web auth UI, Traefik TLS + middleware hardening

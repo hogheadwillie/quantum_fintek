@@ -4,13 +4,13 @@ Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/
 
 ## Status
 
-**v0.5.0-alpha**
+**v0.5.x**
 
 - Alembic migrations (identity schema)
 - Register / login (bcrypt) + Redis refresh tokens
 - RBAC: quant & AI routes require `analyst` (or `admin`)
 - Web console: auth, portfolio optimize, risk (VaR/CVaR), anomaly detection
-- Traefik local + production TLS overlays
+- Traefik: local + TLS overlays, rate limits, security headers, dashboard BasicAuth
 
 ## Quick start
 
@@ -28,12 +28,14 @@ docker compose up --build
 ## Traefik
 
 ```bash
-# Local HTTP
+# Local HTTP + middleware chains
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 
 # Production TLS (see docs/TLS.md)
 docker compose -f docker-compose.yml -f docker-compose.traefik.tls.yml up -d --build
 ```
+
+Middleware details: [`docs/Traefik.md`](docs/Traefik.md).
 
 ## Auth & RBAC
 

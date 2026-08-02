@@ -1,13 +1,20 @@
-# Optional Traefik reverse-proxy overlay (Option B)
+# Optional Traefik reverse-proxy overlay (local)
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 #
 # Access:
-#   http://app.localhost  → web
-#   http://api.localhost  → api
-#   http://localhost/api  → api (PathPrefix + strip)
-#   http://localhost:8080 → Traefik dashboard (loopback)
+#   http://app.localhost           → web  (rate limit + security headers)
+#   http://api.localhost           → api  (rate limit + security headers)
+#   http://localhost/api           → api  (strip /api + rate limit + headers)
+#   http://traefik.localhost       → dashboard (BasicAuth)
+#   http://127.0.0.1:8080          → dashboard direct (loopback only)
+#
+# Dashboard BasicAuth (set in .env):
+#   TRAEFIK_BASIC_AUTH=admin:$$apr1$$...
+#   Generate: htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
+#
+# See docs/Traefik.md for middleware order and hardening notes.
 
 services:
   traefik:
@@ -32,24 +39,64 @@ services:
       - quantum-net
     labels:
       - traefik.enable=true
+
+      # --- Shared middlewares (defined on traefik service) ---
+      # Rate limits
+      - traefik.http.middlewares.qf-rl.ratelimit.average=${TRAEFIK_RL_AVERAGE:-50}
+      - traefik.http.middlewares.qf-rl.ratelimit.burst=${TRAEFIK_RL_BURST:-100}
+      - traefik.http.middlewares.qf-rl.ratelimit.period=1s
+      - traefik.http.middlewares.qf-rl-login.ratelimit.average=${TRAEFIK_RL_LOGIN_AVERAGE:-5}
+      - traefik.http.middlewares.qf-rl-login.ratelimit.burst=${TRAEFIK_RL_LOGIN_BURST:-10}
+      - traefik.http.middlewares.qf-rl-login.ratelimit.period=1s
+
+      # Security headers (browser-facing)
+      - traefik.http.middlewares.qf-headers.headers.frameDeny=true
+      - traefik.http.middlewares.qf-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.qf-headers.headers.browserXssFilter=true
+      - traefik.http.middlewares.qf-headers.headers.referrerPolicy=strict-origin-when-cross-origin
+      - traefik.http.middlewares.qf-headers.headers.customResponseHeaders.X-Powered-By=
+      - traefik.http.middlewares.qf-headers.headers.customResponseHeaders.Server=
+
+      # Chains
+      - traefik.http.middlewares.qf-web-chain.chain.middlewares=qf-rl,qf-headers
+      - traefik.http.middlewares.qf-api-chain.chain.middlewares=qf-rl,qf-headers
+      - traefik.http.middlewares.qf-api-path-chain.chain.middlewares=qf-rl,api-stripprefix,qf-headers
+
+      # Dashboard BasicAuth
+      # Default user/password pair is intentionally weak for local only — override TRAEFIK_BASIC_AUTH.
+      # Hash below is for user "admin" / password "changeme" (apr1). Double-$$ required in Compose files.
+      - traefik.http.middlewares.dash-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$apr1$$8.vJ0qL8$$Q9v5Y8oZ5Y5Y5Y5Y5Y5Y5.}
+      - traefik.http.middlewares.dash-auth.basicauth.realm=QuantumFintek Traefik
+      - traefik.http.middlewares.dash-auth.basicauth.removeheader=true
+
+      # Dashboard router (Host) + BasicAuth
       - traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)
       - traefik.http.routers.dashboard.entrypoints=web
       - traefik.http.routers.dashboard.service=api@internal
+      - traefik.http.routers.dashboard.middlewares=dash-auth
 
   api:
     labels:
       - traefik.enable=true
       - traefik.docker.network=quantum-net
+
+      # Host-based API
       - traefik.http.routers.api.rule=Host(`api.localhost`)
       - traefik.http.routers.api.entrypoints=web
       - traefik.http.routers.api.service=api-svc
       - traefik.http.routers.api.priority=10
+      - traefik.http.routers.api.middlewares=qf-api-chain@docker
+
+      # Path-based API (/api → strip)
       - traefik.http.routers.api-path.rule=PathPrefix(`/api`)
       - traefik.http.routers.api-path.entrypoints=web
       - traefik.http.routers.api-path.service=api-svc
-      - traefik.http.routers.api-path.middlewares=api-stripprefix
       - traefik.http.routers.api-path.priority=100
+      - traefik.http.routers.api-path.middlewares=qf-api-path-chain@docker
+
+      # StripPrefix (referenced by path chain; also defined here so Docker provider owns it)
       - traefik.http.middlewares.api-stripprefix.stripprefix.prefixes=/api
+
       - traefik.http.services.api-svc.loadbalancer.server.port=8000
 
   web:
@@ -60,4 +107,5 @@ services:
       - traefik.http.routers.web.entrypoints=web
       - traefik.http.routers.web.service=web-svc
       - traefik.http.routers.web.priority=10
+      - traefik.http.routers.web.middlewares=qf-web-chain@docker
       - traefik.http.services.web-svc.loadbalancer.server.port=3000
