@@ -1,10 +1,11 @@
-"""Authentication routes: register, login, refresh, me, verify (ForwardAuth)."""
+"""Authentication routes: register, login, refresh, logout, me, verify."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.db.session import get_db
 from app.identity.security import TokenPayload, TokenService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+bearer_optional = HTTPBearer(auto_error=False)
 
 
 class RegisterRequest(BaseModel):
@@ -37,6 +39,18 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
+class LogoutResponse(BaseModel):
+    detail: str
+    access_jti_denied: str
+    subject: str
+    refresh_revoked: bool = False
+    refresh_tokens_revoked: int | None = None
 
 
 class UserResponse(BaseModel):
@@ -96,7 +110,7 @@ async def login(
 
     roles = ["user", "analyst"]
     access = tokens.create_access_token(str(user.id), roles=roles)
-    refresh = await tokens.create_refresh_token(str(user.id))
+    refresh = await tokens.create_refresh_token(str(user.id), roles=roles)
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 
@@ -110,6 +124,50 @@ async def refresh_tokens(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return TokenResponse(access_token=access, refresh_token=refresh)
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    body: LogoutRequest | None = None,
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
+    tokens: TokenService = Depends(get_token_service),
+) -> LogoutResponse:
+    """Deny current access JTI in Redis; optionally revoke refresh token."""
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        result = await tokens.logout(
+            access_token=creds.credentials,
+            refresh_token=(body.refresh_token if body else None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    return LogoutResponse(
+        detail="Logged out",
+        access_jti_denied=result["access_jti_denied"],
+        subject=result["subject"],
+        refresh_revoked=bool(result.get("refresh_revoked")),
+    )
+
+
+@router.post("/logout-all", response_model=LogoutResponse)
+async def logout_all(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
+    tokens: TokenService = Depends(get_token_service),
+) -> LogoutResponse:
+    """Deny current access token and revoke all refresh tokens for the subject."""
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        result = await tokens.logout_all(access_token=creds.credentials)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exp
+    return LogoutResponse(
+        detail="Logged out from all sessions",
+        access_jti_denied=result["access_jti_denied"],
+        subject=result["subject"],
+        refresh_tokens_revoked=int(result.get("refresh_tokens_revoked") or 0),
+    )
 
 
 @router.get("/me", response_model=UserResponse)
@@ -133,13 +191,7 @@ async def me(
 async def verify_for_forward_auth(
     payload: TokenPayload = Depends(get_current_payload),
 ) -> Response:
-    """Traefik ForwardAuth endpoint.
-
-    - 200 + X-QF-* headers when Bearer access token is valid
-    - 401 when missing/invalid (Traefik returns this to the client)
-
-    Only trust credentials from Authorization. Never honor client-supplied X-QF-*.
-    """
+    """Traefik ForwardAuth endpoint — also respects Redis access denylist."""
     response = Response(status_code=status.HTTP_200_OK, content=b"")
     response.headers["X-QF-User-Id"] = payload.sub
     response.headers["X-QF-Roles"] = ",".join(payload.roles or [])
@@ -156,5 +208,5 @@ async def issue_tokens(
     """Dev-only token minting without password."""
     roles = body.roles or ["user", "analyst"]
     access = tokens.create_access_token(body.subject, org_id=body.org_id, roles=roles)
-    refresh = await tokens.create_refresh_token(body.subject)
+    refresh = await tokens.create_refresh_token(body.subject, roles=roles, org_id=body.org_id)
     return TokenResponse(access_token=access, refresh_token=refresh)

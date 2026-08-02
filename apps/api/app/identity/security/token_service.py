@@ -1,4 +1,4 @@
-"""JWT Token Service with optional Redis session / denylist integration."""
+"""JWT Token Service with Redis session / denylist integration."""
 
 from __future__ import annotations
 
@@ -39,6 +39,13 @@ class TokenService:
         self.refresh_token_expire_days = refresh_token_expire_days
         self.session_store = session_store
 
+    @staticmethod
+    def _seconds_until(exp: datetime) -> int:
+        now = datetime.now(timezone.utc)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return max(int((exp - now).total_seconds()), 1)
+
     def create_access_token(
         self,
         subject: str,
@@ -61,7 +68,12 @@ class TokenService:
             payload.update(extra_claims)
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
 
-    async def create_refresh_token(self, subject: str) -> str:
+    async def create_refresh_token(
+        self,
+        subject: str,
+        roles: Optional[list[str]] = None,
+        org_id: Optional[str] = None,
+    ) -> str:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(days=self.refresh_token_expire_days)
         jti = str(uuid.uuid4())
@@ -71,11 +83,13 @@ class TokenService:
             "iat": now,
             "jti": jti,
             "type": "refresh",
+            "roles": roles or [],
+            "org_id": org_id,
         }
         token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
         if self.session_store:
-            ttl = int((expire - now).total_seconds())
-            await self.session_store.store_refresh(jti, subject, ttl)
+            ttl = self._seconds_until(expire)
+            await self.session_store.store_refresh(jti, subject, ttl, roles=roles or [])
         return token
 
     def decode_token(self, token: str) -> TokenPayload:
@@ -93,18 +107,76 @@ class TokenService:
             raise ValueError("Token has been revoked")
         return payload
 
+    async def revoke_access_token(self, access_token: str) -> TokenPayload:
+        """Decode access token and place its JTI on the Redis denylist until exp."""
+        payload = self.decode_token(access_token)
+        if payload.type != "access":
+            raise ValueError("Not an access token")
+        if self.session_store:
+            ttl = self._seconds_until(payload.exp)
+            await self.session_store.deny_access(payload.jti, ttl)
+        return payload
+
+    async def logout(
+        self,
+        access_token: str,
+        refresh_token: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Revoke current access JTI; optionally revoke a refresh token."""
+        access_payload = await self.revoke_access_token(access_token)
+        refresh_revoked = False
+        if refresh_token and self.session_store:
+            try:
+                refresh_payload = self.decode_token(refresh_token)
+                if refresh_payload.type == "refresh":
+                    await self.session_store.revoke_refresh(
+                        refresh_payload.jti, subject=refresh_payload.sub
+                    )
+                    refresh_revoked = True
+            except ValueError:
+                # Expired/invalid refresh still counts as logged out client-side
+                refresh_revoked = False
+        return {
+            "access_jti_denied": access_payload.jti,
+            "subject": access_payload.sub,
+            "refresh_revoked": refresh_revoked,
+        }
+
+    async def logout_all(self, access_token: str) -> dict[str, Any]:
+        """Deny current access token and revoke all refresh tokens for the subject."""
+        access_payload = await self.revoke_access_token(access_token)
+        revoked_refresh = 0
+        if self.session_store:
+            revoked_refresh = await self.session_store.revoke_all_refresh_for_subject(
+                access_payload.sub
+            )
+        return {
+            "access_jti_denied": access_payload.jti,
+            "subject": access_payload.sub,
+            "refresh_tokens_revoked": revoked_refresh,
+        }
+
     async def rotate_refresh_token(self, refresh_token: str) -> tuple[str, str]:
         """Validate refresh token, revoke old JTI, issue new access + refresh."""
         payload = self.decode_token(refresh_token)
         if payload.type != "refresh":
             raise ValueError("Not a refresh token")
+
+        roles = list(payload.roles or [])
+        org_id = payload.org_id
+
         if self.session_store:
-            stored = await self.session_store.get_refresh_subject(payload.jti)
-            if not stored or stored != payload.sub:
+            record = await self.session_store.get_refresh_record(payload.jti)
+            if not record or str(record.get("sub")) != payload.sub:
                 raise ValueError("Refresh token revoked or unknown")
-            await self.session_store.revoke_refresh(payload.jti)
-        access = self.create_access_token(payload.sub)
-        new_refresh = await self.create_refresh_token(payload.sub)
+            # Prefer roles from Redis record if JWT omitted them
+            stored_roles = record.get("roles") or []
+            if not roles and isinstance(stored_roles, list):
+                roles = [str(r) for r in stored_roles]
+            await self.session_store.revoke_refresh(payload.jti, subject=payload.sub)
+
+        access = self.create_access_token(payload.sub, org_id=org_id, roles=roles)
+        new_refresh = await self.create_refresh_token(payload.sub, roles=roles, org_id=org_id)
         return access, new_refresh
 
     def is_access_token(self, token: str) -> bool:
