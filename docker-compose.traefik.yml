@@ -10,9 +10,9 @@
 #   http://traefik.localhost       → dashboard (BasicAuth)
 #   http://127.0.0.1:8080          → dashboard direct (loopback only)
 #
-# Dashboard BasicAuth (set in .env):
-#   TRAEFIK_BASIC_AUTH=admin:$$apr1$$...
-#   Generate: htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
+# Dashboard BasicAuth — ALWAYS set your own hash in .env:
+#   htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
+#   TRAEFIK_BASIC_AUTH=admin:$$2y$$05$$...
 #
 # See docs/Traefik.md for middleware order and hardening notes.
 
@@ -27,7 +27,7 @@ services:
       - --providers.docker.network=quantum-net
       - --entrypoints.web.address=:80
       - --api.dashboard=true
-      - --api.insecure=true
+      --api.insecure=true
       - --log.level=INFO
       - --accesslog=true
     ports:
@@ -63,9 +63,9 @@ services:
       - traefik.http.middlewares.qf-api-path-chain.chain.middlewares=qf-rl,api-stripprefix,qf-headers
 
       # Dashboard BasicAuth
-      # Default user/password pair is intentionally weak for local only — override TRAEFIK_BASIC_AUTH.
-      # Hash below is for user "admin" / password "changeme" (apr1). Double-$$ required in Compose files.
-      - traefik.http.middlewares.dash-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$apr1$$8.vJ0qL8$$Q9v5Y8oZ5Y5Y5Y5Y5Y5Y5.}
+      # Override TRAEFIK_BASIC_AUTH in .env (required for a known password).
+      # Fallback uses Traefik docs sample apr1 hash format (user admin) — regenerate for real use.
+      - traefik.http.middlewares.dash-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$apr1$$H6uskkkW$$IgXLP6ewTrSuBkTrqE8wj/}
       - traefik.http.middlewares.dash-auth.basicauth.realm=QuantumFintek Traefik
       - traefik.http.middlewares.dash-auth.basicauth.removeheader=true
 
@@ -94,7 +94,7 @@ services:
       - traefik.http.routers.api-path.priority=100
       - traefik.http.routers.api-path.middlewares=qf-api-path-chain@docker
 
-      # StripPrefix (referenced by path chain; also defined here so Docker provider owns it)
+      # StripPrefix (referenced by path chain)
       - traefik.http.middlewares.api-stripprefix.stripprefix.prefixes=/api
 
       - traefik.http.services.api-svc.loadbalancer.server.port=8000
