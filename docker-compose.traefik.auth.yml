@@ -1,0 +1,68 @@
+# Traefik ForwardAuth overlay (stack on top of local Traefik overlay)
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.traefik.yml \
+#     -f docker-compose.traefik.auth.yml \
+#     up --build
+#
+# Behavior:
+#   Public (no ForwardAuth): /auth/*, /health, /, /docs, /openapi.json, /redoc
+#   Protected (ForwardAuth): all other API routes (e.g. /quant/*, /ai/*, /auth/me)
+#
+# ForwardAuth calls http://api:8000/auth/verify with Authorization only.
+# On 200, copies X-QF-User-Id / X-QF-Roles / X-QF-Org-Id onto the upstream request.
+# FastAPI still enforces JWT + RBAC (defense in depth).
+#
+# See docs/Traefik.md
+
+services:
+  traefik:
+    labels:
+      # ForwardAuth → QuantumFintek verify endpoint
+      - traefik.http.middlewares.qf-forwardauth.forwardauth.address=http://api:8000/auth/verify
+      - traefik.http.middlewares.qf-forwardauth.forwardauth.authRequestHeaders=Authorization
+      - traefik.http.middlewares.qf-forwardauth.forwardauth.authResponseHeaders=X-QF-User-Id,X-QF-Roles,X-QF-Org-Id
+      - traefik.http.middlewares.qf-forwardauth.forwardauth.trustForwardHeader=false
+      - traefik.http.middlewares.qf-forwardauth.forwardauth.maxResponseBodySize=1024
+
+      # Chains: public vs protected (host-based API)
+      - traefik.http.middlewares.qf-api-public-chain.chain.middlewares=qf-rl,qf-headers
+      - traefik.http.middlewares.qf-api-protected-chain.chain.middlewares=qf-rl,qf-forwardauth,qf-headers
+
+      # Chains: public vs protected (path-based /api)
+      - traefik.http.middlewares.qf-api-path-public-chain.chain.middlewares=qf-rl,api-stripprefix,qf-headers
+      - traefik.http.middlewares.qf-api-path-protected-chain.chain.middlewares=qf-rl,qf-forwardauth,api-stripprefix,qf-headers
+
+  api:
+    labels:
+      # --- Host-based: api.localhost ---
+      # Public routes (higher priority) — no ForwardAuth
+      - traefik.http.routers.api-public.rule=Host(`api.localhost`) && (PathPrefix(`/auth`) || Path(`/health`) || Path(`/`) || PathPrefix(`/docs`) || PathPrefix(`/openapi.json`) || PathPrefix(`/redoc`))
+      - traefik.http.routers.api-public.entrypoints=web
+      - traefik.http.routers.api-public.service=api-svc
+      - traefik.http.routers.api-public.priority=30
+      - traefik.http.routers.api-public.middlewares=qf-api-public-chain@docker
+
+      # Protected catch-all on api.localhost
+      - traefik.http.routers.api.rule=Host(`api.localhost`)
+      - traefik.http.routers.api.entrypoints=web
+      - traefik.http.routers.api.service=api-svc
+      - traefik.http.routers.api.priority=10
+      - traefik.http.routers.api.middlewares=qf-api-protected-chain@docker
+
+      # --- Path-based: /api/* ---
+      # Public under /api
+      - traefik.http.routers.api-path-public.rule=PathPrefix(`/api/auth`) || Path(`/api/health`) || Path(`/api`) || Path(`/api/`) || PathPrefix(`/api/docs`) || PathPrefix(`/api/openapi.json`) || PathPrefix(`/api/redoc`)
+      - traefik.http.routers.api-path-public.entrypoints=web
+      - traefik.http.routers.api-path-public.service=api-svc
+      - traefik.http.routers.api-path-public.priority=120
+      - traefik.http.routers.api-path-public.middlewares=qf-api-path-public-chain@docker
+
+      # Protected catch-all under /api
+      - traefik.http.routers.api-path.rule=PathPrefix(`/api`)
+      - traefik.http.routers.api-path.entrypoints=web
+      - traefik.http.routers.api-path.service=api-svc
+      - traefik.http.routers.api-path.priority=100
+      - traefik.http.routers.api-path.middlewares=qf-api-path-protected-chain@docker

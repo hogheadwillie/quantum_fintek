@@ -8,9 +8,9 @@ Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/
 
 - Alembic migrations (identity schema)
 - Register / login (bcrypt) + Redis refresh tokens
-- RBAC: quant & AI routes require `analyst` (or `admin`)
-- Web console: auth, portfolio optimize, risk (VaR/CVaR), anomaly detection
-- Traefik: local + TLS overlays, rate limits, security headers, dashboard BasicAuth
+- RBAC on quant & AI routes
+- Web console with auth + quant/AI panels
+- Traefik: rate limits, security headers, dashboard BasicAuth, **ForwardAuth** (`/auth/verify`)
 
 ## Quick start
 
@@ -28,25 +28,21 @@ docker compose up --build
 ## Traefik
 
 ```bash
-# Local HTTP + middleware chains
+# Local proxy
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
 
-# Production TLS (see docs/TLS.md)
+# + ForwardAuth (edge JWT gate on protected routes)
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml -f docker-compose.traefik.auth.yml up --build
+
+# Production TLS
 docker compose -f docker-compose.yml -f docker-compose.traefik.tls.yml up -d --build
 ```
 
-Middleware details: [`docs/Traefik.md`](docs/Traefik.md).
+See [`docs/Traefik.md`](docs/Traefik.md).
 
-## Auth & RBAC
+## Auth
 
-1. Register → Login (token includes `user`, `analyst`)
-2. `/quant/*` and `/ai/*` require Bearer + analyst/admin role
-3. Refresh tokens stored in Redis with rotation
-
-## Migrations
-
-On API startup, Alembic runs `upgrade head`. Manual:
-
-```bash
-cd apps/api && alembic upgrade head
-```
+1. `POST /auth/register` → `POST /auth/login`
+2. Bearer token on `/quant/*`, `/ai/*`, `/auth/me`
+3. `GET /auth/verify` for Traefik ForwardAuth (returns `X-QF-*` headers)
+4. Refresh tokens in Redis with rotation

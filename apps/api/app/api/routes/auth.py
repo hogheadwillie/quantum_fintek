@@ -1,10 +1,10 @@
-"""Authentication routes: register, login, refresh, me."""
+"""Authentication routes: register, login, refresh, me, verify (ForwardAuth)."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,7 +94,6 @@ async def login(
     user.last_login = datetime.now(timezone.utc)
     await db.commit()
 
-    # Default application roles until org membership RBAC is fully wired
     roles = ["user", "analyst"]
     access = tokens.create_access_token(str(user.id), roles=roles)
     refresh = await tokens.create_refresh_token(str(user.id))
@@ -128,6 +127,25 @@ async def me(
         status=user.status,
         roles=list(payload.roles or []),
     )
+
+
+@router.get("/verify", status_code=status.HTTP_200_OK)
+async def verify_for_forward_auth(
+    payload: TokenPayload = Depends(get_current_payload),
+) -> Response:
+    """Traefik ForwardAuth endpoint.
+
+    - 200 + X-QF-* headers when Bearer access token is valid
+    - 401 when missing/invalid (Traefik returns this to the client)
+
+    Only trust credentials from Authorization. Never honor client-supplied X-QF-*.
+    """
+    response = Response(status_code=status.HTTP_200_OK, content=b"")
+    response.headers["X-QF-User-Id"] = payload.sub
+    response.headers["X-QF-Roles"] = ",".joinjoin(payload.roles or [])
+    if payload.org_id:
+        response.headers["X-QF-Org-Id"] = payload.org_id
+    return response
 
 
 @router.post("/token", response_model=TokenResponse)

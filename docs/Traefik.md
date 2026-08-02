@@ -1,93 +1,142 @@
 # Traefik middleware guide (QuantumFintek)
 
-Local overlay: `docker-compose.traefik.yml`  
-TLS overlay: `docker-compose.traefik.tls.yml`  
+| Overlay | File |
+|---------|------|
+| Local HTTP | `docker-compose.traefik.yml` |
+| ForwardAuth | `docker-compose.traefik.auth.yml` |
+| Production TLS | `docker-compose.traefik.tls.yml` |
+
 Also see: [TLS.md](./TLS.md), [Development.md](./Development.md)
 
 ## Quick start (local)
 
 ```bash
 cp .env.example .env
-# Set a real dashboard password hash:
+# Dashboard BasicAuth:
 # htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
-# Put result in TRAEFIK_BASIC_AUTH=...
 
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
+```
+
+### With ForwardAuth
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.traefik.yml \
+  -f docker-compose.traefik.auth.yml \
+  up --build
 ```
 
 | URL | Middleware stack |
 |-----|------------------|
 | http://app.localhost | `qf-rl` → `qf-headers` |
-| http://api.localhost | `qf-rl` → `qf-headers` |
-| http://localhost/api | `qf-rl` → `api-stripprefix` → `qf-headers` |
-| http://traefik.localhost | `dash-auth` (BasicAuth) |
-| http://127.0.0.1:8080 | Direct dashboard (loopback only; no BasicAuth on :8080) |
+| http://api.localhost/auth/* | public: rate limit + headers |
+| http://api.localhost/quant/* | **ForwardAuth** + rate limit + headers |
+| http://localhost/api/... | same split after strip |
+| http://traefik.localhost | BasicAuth dashboard |
 
-## Middleware inventory
+## ForwardAuth
+
+### Verify endpoint
+
+`GET /auth/verify` (FastAPI):
+
+- Requires `Authorization: Bearer <access_token>`
+- Validates JWT + Redis denylist via existing `TokenService`
+- **200** empty body + headers:
+  - `X-QF-User-Id`
+  - `X-QF-Roles` (comma-separated)
+  - `X-QF-Org-Id` (optional)
+- **401** if missing/invalid
+
+### Traefik middleware settings
+
+```text
+address              = http://api:8000/auth/verify
+authRequestHeaders   = Authorization          # allowlist only
+authResponseHeaders  = X-QF-User-Id,X-QF-Roles,X-QF-Org-Id
+trustForwardHeader   = false
+maxResponseBodySize  = 1024
+```
+
+### Public vs protected routers
+
+| Class | Paths | ForwardAuth |
+|-------|-------|-------------|
+| Public | `/auth/*`, `/health`, `/`, `/docs`, `/openapi.json`, `/redoc` | No |
+| Protected | everything else on API host (e.g. `/quant/*`, `/ai/*`, `/auth/me`) | Yes |
+
+Note: `/auth/me` and `/auth/verify` are under `/auth` so they match the **public** Traefik path prefix. `/auth/me` still requires JWT **inside** FastAPI. `/auth/verify` is only called by Traefik’s ForwardAuth subrequest.
+
+If you need edge auth on `/auth/me`, split routers further (e.g. public only `PathPrefix(/auth/login)` + register + refresh).
+
+### Header trust rules
+
+1. Clients must not be trusted for `X-QF-*` — only the verify endpoint sets them after JWT validation.
+2. FastAPI **still** validates Bearer JWT on protected routes (RBAC unchanged).
+3. Treat `X-QF-*` as optional convenience headers, not sole authentication.
+4. Keep Traefik image patched for ForwardAuth header CVEs.
+
+### Manual test
+
+```bash
+# Login
+TOKEN=$(curl -s -X POST http://api.localhost/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"analyst@example.com","password":"changeme123"}' | jq -r .access_token)
+
+# Edge-protected quant call
+curl -s -X POST http://api.localhost/quant/optimize \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"expected_returns":[0.05,0.07],"covariance":[[0.01,0.0],[0.0,0.02]]}'
+
+# Without token → 401 from ForwardAuth
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://api.localhost/quant/optimize
+```
+
+## Middleware inventory (base overlay)
 
 ### `qf-rl` — RateLimit
 
 - Default: average 50 req/s, burst 100 (`TRAEFIK_RL_*`)
-- Applied to web + API routers
-- Source: client IP (direct edge; no trusted `X-Forwarded-For` in local overlay)
-
-### `qf-rl-login` — stricter RateLimit (defined, optional)
-
-- average 5 / burst 10 — attach to a dedicated login router when you split public auth paths
 
 ### `qf-headers` — security Headers
 
-- `frameDeny`, `contentTypeNosniff`, `browserXssFilter`
-- `referrerPolicy=strict-origin-when-cross-origin`
-- Clears `Server` / `X-Powered-By` response headers
-- HSTS is **not** set on the local HTTP overlay (use TLS overlay in production)
+- frame deny, nosniff, XSS filter, referrer policy; strip Server / X-Powered-By
 
 ### `api-stripprefix`
 
-- Strips `/api` for path-based routing so FastAPI routes stay `/quant/...`
+- Strips `/api` for path-based routing
 
 ### Chains
 
 | Chain | Order |
 |-------|--------|
 | `qf-web-chain` | rate limit → headers |
-| `qf-api-chain` | rate limit → headers |
-| `qf-api-path-chain` | rate limit → strip `/api` → headers |
-
-Order follows best practice: cheap limits first, then path rewrite, then response headers.
+| `qf-api-public-chain` | rate limit → headers |
+| `qf-api-protected-chain` | rate limit → **ForwardAuth** → headers |
+| `qf-api-path-*-chain` | same with strip for `/api` |
 
 ### `dash-auth` — BasicAuth
-
-- Protects `Host(traefik.localhost)` dashboard router
-- `removeHeader=true` so Basic credentials are not forwarded upstream
-- **Generate your own hash**; do not rely on any committed default in production
 
 ```bash
 htpasswd -nbB admin 'your-password' | sed -e 's/\$/$$/g'
 # TRAEFIK_BASIC_AUTH=admin:$$2y$$05$$...
 ```
 
-Note: port `8080` remains bound to loopback without BasicAuth for local debugging. In production, disable insecure API or put it only behind TLS + auth.
+## Design rules
 
-## Design rules we follow
-
-1. **Middleware order:** rate limit → auth (when used) → path rewrite → headers → compress
-2. **Chains** for reuse instead of duplicating label lists
-3. **No ForwardAuth on login/register/health** until a dedicated public router exists
-4. **App JWT/RBAC remains authoritative** — edge limits abuse, does not replace FastAPI auth
-5. **Pin Traefik** and prefer patched minor versions for auth-header CVEs
-6. **Docker socket read-only**; `exposedByDefault=false`
+1. Rate limit before auth; headers after decisions
+2. Chains for reuse
+3. No ForwardAuth on login/register/health
+4. App JWT/RBAC remains authoritative
+5. Pin Traefik; docker.sock read-only; `exposedByDefault=false`
 
 ## Production notes
 
-- Use `docker-compose.traefik.tls.yml` for ACME + HTTPS redirect
-- Add HSTS (`stsSeconds`) only on TLS entrypoints
-- Set entrypoint `forwardedHeaders.trustedIPs` if behind a CDN/LB before relying on IP rate limits
-- Consider `underscoreHeadersStrategy=delete` on entrypoints when backends normalize `_` / `-` headers
-- Drop published Postgres/Redis host ports and API `:8000` if Traefik is the only ingress
-
-## Optional next steps
-
-- `GET /auth/verify` + ForwardAuth chain for protected API routes
-- Dedicated router for `/auth/login` with `qf-rl-login`
-- File provider for long middleware definitions outside Compose labels
+- Combine with `docker-compose.traefik.tls.yml` for HTTPS
+- Add HSTS only on TLS entrypoints
+- Set `forwardedHeaders.trustedIPs` behind CDN/LB
+- Consider `underscoreHeadersStrategy=delete` on entrypoints
