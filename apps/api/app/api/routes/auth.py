@@ -161,7 +161,7 @@ async def logout_all(
     try:
         result = await tokens.logout_all(access_token=creds.credentials)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exp
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     return LogoutResponse(
         detail="Logged out from all sessions",
         access_jti_denied=result["access_jti_denied"],
