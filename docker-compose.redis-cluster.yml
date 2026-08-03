@@ -3,35 +3,46 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up -d --build
 #
-# API env (set in .env or override):
+# API env:
 #   REDIS_MODE=cluster
 #   REDIS_CLUSTER_NODES=redis-node-1:6379,redis-node-2:6379,redis-node-3:6379
-#   # leave REDIS_URL unused or point at any startup node
 #
 # Init (first time, after nodes are up):
 #   docker compose -f docker-compose.redis-cluster.yml exec redis-node-1 \
 #     redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 \
 #     --cluster-replicas 0 --cluster-yes
 #
-# Note: disables the single-node `redis` service from the base compose when merged
-# by replacing it with cluster nodes. Point API at cluster nodes.
+# cluster-node-timeout (ms):
+#   Default 5000 for local Docker (faster PFAIL/FAIL than Redis default 15000).
+#   Production / multi-AZ: prefer 10000–15000 to reduce false failovers.
+#   Override: REDIS_CLUSTER_NODE_TIMEOUT_MS=15000
+#
+# Note: --cluster-replicas 0 means NO automatic failover on master loss —
+# detection still marks FAIL; slots stay uncovered until the node returns.
 
 services:
   redis:
-    # Keep base redis off when using cluster overlay
     profiles: ["standalone-redis"]
 
   redis-node-1:
     image: redis:7-alpine
     container_name: quantum-fintek-redis-1
-    command: >
-      redis-server
-      --port 6379
-      --cluster-enabled yes
-      --cluster-config-file nodes.conf
-      --cluster-node-timeout 5000
-      --appendonly yes
-      --protected-mode no
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "${REDIS_CLUSTER_NODE_TIMEOUT_MS:-5000}"
+      - --cluster-require-full-coverage
+      - "no"
+      - --appendonly
+      - "yes"
+      - --protected-mode
+      - "no"
     volumes:
       - redis_cluster_1:/data
     networks:
@@ -40,14 +51,22 @@ services:
   redis-node-2:
     image: redis:7-alpine
     container_name: quantum-fintek-redis-2
-    command: >
-      redis-server
-      --port 6379
-      --cluster-enabled yes
-      --cluster-config-file nodes.conf
-      --cluster-node-timeout 5000
-      --appendonly yes
-      --protected-mode no
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "${REDIS_CLUSTER_NODE_TIMEOUT_MS:-5000}"
+      - --cluster-require-full-coverage
+      - "no"
+      - --appendonly
+      - "yes"
+      - --protected-mode
+      - "no"
     volumes:
       - redis_cluster_2:/data
     networks:
@@ -56,14 +75,22 @@ services:
   redis-node-3:
     image: redis:7-alpine
     container_name: quantum-fintek-redis-3
-    command: >
-      redis-server
-      --port 6379
-      --cluster-enabled yes
-      --cluster-config-file nodes.conf
-      --cluster-node-timeout 5000
-      --appendonly yes
-      --protected-mode no
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "${REDIS_CLUSTER_NODE_TIMEOUT_MS:-5000}"
+      - --cluster-require-full-coverage
+      - "no"
+      - --appendonly
+      - "yes"
+      - --protected-mode
+      - "no"
     volumes:
       - redis_cluster_3:/data
     networks:
@@ -74,6 +101,9 @@ services:
       - REDIS_MODE=cluster
       - REDIS_CLUSTER_NODES=redis-node-1:6379,redis-node-2:6379,redis-node-3:6379
       - REDIS_URL=redis://redis-node-1:6379/0
+      - REDIS_SOCKET_CONNECT_TIMEOUT=${REDIS_SOCKET_CONNECT_TIMEOUT:-2.0}
+      - REDIS_SOCKET_TIMEOUT=${REDIS_SOCKET_TIMEOUT:-5.0}
+      - REDIS_CLUSTER_ERROR_RETRY_ATTEMPTS=${REDIS_CLUSTER_ERROR_RETRY_ATTEMPTS:-5}
     depends_on:
       - redis-node-1
       - redis-node-2

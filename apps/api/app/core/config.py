@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     )
     redis_key_prefix: str = "qf"
 
+    # Client timeouts (seconds) — keep connect < node-timeout; socket ~ node-timeout
+    redis_socket_connect_timeout: float = Field(default=2.0, description="TCP connect timeout")
+    redis_socket_timeout: float = Field(default=5.0, description="Per-command socket timeout")
+    redis_cluster_error_retry_attempts: int = Field(
+        default=5,
+        description="Retries on ConnectionError/TimeoutError/ClusterDownError",
+    )
+
     cors_origins: str = (
         "http://localhost:3000,http://app.localhost,http://api.localhost,http://localhost"
     )

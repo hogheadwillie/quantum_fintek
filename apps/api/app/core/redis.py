@@ -26,29 +26,37 @@ async def get_redis() -> RedisClient:
     if mode == "cluster":
         _client = await _build_cluster_client(settings)
     else:
-        _client = redis.from_url(settings.redis_url, decode_responses=True)
+        _client = redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=settings.redis_socket_connect_timeout,
+            socket_timeout=settings.redis_socket_timeout,
+        )
 
     return _client
 
 
 async def _build_cluster_client(settings: Any) -> RedisCluster:
+    """Build RedisCluster with timeouts aligned to cluster-node-timeout.
+
+    Server-side NODE_TIMEOUT (compose default 5000ms) drives PFAIL/FAIL.
+    Client socket timeouts should fail a dead connection *before* the next
+    auth path blocks for the full gossip window, then retry onto a live node.
+    """
+    common: dict[str, Any] = {
+        "decode_responses": True,
+        "require_full_coverage": False,
+        "socket_connect_timeout": settings.redis_socket_connect_timeout,
+        "socket_timeout": settings.redis_socket_timeout,
+        "cluster_error_retry_attempts": settings.redis_cluster_error_retry_attempts,
+    }
+
     nodes = settings.redis_cluster_node_list
     if not nodes:
-        # Allow REDIS_URL host as single startup node
-        url = settings.redis_url
-        client = RedisCluster.from_url(
-            url,
-            decode_responses=True,
-            require_full_coverage=False,
-        )
-        return client
+        return RedisCluster.from_url(settings.redis_url, **common)
 
     startup_nodes = [{"host": h, "port": p} for h, p in nodes]
-    return RedisCluster(
-        startup_nodes=startup_nodes,
-        decode_responses=True,
-        require_full_coverage=False,
-    )
+    return RedisCluster(startup_nodes=startup_nodes, **common)
 
 
 async def close_redis() -> None:
