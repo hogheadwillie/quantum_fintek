@@ -1,6 +1,6 @@
 # Redis Cluster — control plane reference
 
-Companion to [Redis.md](./Redis.md). Focus: bus, gossip, failure detection, migration, replica validity, and **CLI**.
+Companion to [Redis.md](./Redis.md). Focus: bus, gossip, failure detection, migration, replica validity, topology diagrams, and **CLI**.
 
 ## Ports
 
@@ -10,6 +10,136 @@ Companion to [Redis.md](./Redis.md). Focus: bus, gossip, failure detection, migr
 | `16379` (client+10000) | Binary cluster bus | Nodes only |
 
 Override bus port with `cluster-port` / `CLUSTER MEET … bus-port`.
+
+## Topology: full-mesh bus links
+
+Redis Cluster is a **full mesh** on the cluster bus: every node keeps a persistent TCP connection to every other node. Client RESP traffic is **not** meshed; only control-plane gossip is.
+
+### Link count
+
+For \(N\) nodes:
+
+| Direction | Count |
+|-----------|-------|
+| Undirected edges | \(N(N-1)/2\) |
+| Directed (out + in per node) | each node: \(N-1\) out, \(N-1\) in |
+
+| Nodes | Undirected bus links |
+|-------|----------------------|
+| 3 (lab) | **3** |
+| 6 (3 masters + 3 replicas) | **15** |
+| 10 | **45** |
+
+### QuantumFintek lab (3 masters, no replicas)
+
+```text
+                    cluster bus (port 16379)
+                 =============================
+
+              redis-node-1 (M)
+             /               \
+            /  link 1—2        \  link 1—3
+           /                     \
+  redis-node-2 (M) --------- redis-node-3 (M)
+              \    link 2–3    /
+
+  M = master owning ~1/3 of 16384 slots
+  Each edge = bidirectional TCP bus link (PING/PONG/MEET/FAIL/UPDATE)
+```
+
+Mermaid (renders on GitHub):
+
+```mermaid
+graph LR
+  N1["redis-node-1<br/>master<br/>slots ~0-5460"]
+  N2["redis-node-2<br/>master<br/>slots ~5461-10922"]
+  N3["redis-node-3<br/>master<br/>slots ~10923-16383"]
+
+  N1 <-->|bus 16379| N2
+  N2 <-->|bus 16379| N3
+  N1 <-->|bus 16379| N3
+```
+
+### Client plane vs bus plane
+
+```text
+  API / redis-py
+       |
+       | RESP :6379  (slot-routed; MOVED/ASK as needed)
+       |
+       v
+  +----+------+     +----+------+     +----+------+
+  | node-1    |     | node-2    |     | node-3    |
+  | master    |     | master    |     | master    |
+  +-----------+     +-----------+     +-----------+
+       ^  \______________|  /______________|  ^
+       |         bus mesh :16379 (full)        |
+       +---------------------------------------+
+
+  Data plane:  client → one master (per key/slot)
+  Control plane: every node ↔ every node
+```
+
+### HA topology (3 masters + 3 replicas) — target shape
+
+Not the current lab create flags; shown for when `--cluster-replicas 1` is used.
+
+```text
+  Slot ownership (data)          Bus mesh (all 6 nodes fully linked)
+
+  M1 <---repl--- R1              M1 — M2 — M3
+  M2 <---repl--- R2               \ | / \ | /
+  M3 <---repl--- R3                R1 R2 R3  (each also linked to all others)
+
+  Replication links ≠ bus links
+  - repl: master → replica (async data copy)
+  - bus:  full mesh among M1,M2,M3,R1,R2,R3 (gossip / votes)
+```
+
+```mermaid
+graph TB
+  subgraph shards [Slot ownership]
+    M1[M1 slots A]
+    R1[R1 replica of M1]
+    M2[M2 slots B]
+    R2[R2 replica of M2]
+    M3[M3 slots C]
+    R3[R3 replica of M3]
+    M1 -.->|replication| R1
+    M2 -.->|replication| R2
+    M3 -.->|replication| R3
+  end
+
+  subgraph bus [Cluster bus full mesh - illustrative]
+    M1b[M1] --- M2b[M2]
+    M2b --- M3b[M3]
+    M3b --- M1b
+    M1b --- R1b[R1]
+    M1b --- R2b[R2]
+    M1b --- R3b[R3]
+    M2b --- R1b
+    M2b --- R2b
+    M2b --- R3b
+    M3b --- R1b
+    M3b --- R2b
+    M3b --- R3b
+    R1b --- R2b
+    R2b --- R3b
+    R3b --- R1b
+  end
+```
+
+### Inspect link health
+
+```bash
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER NODES
+# link-state column: connected | disconnected
+
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER INFO
+# cluster_stats_messages_sent / _received  (bus traffic)
+```
+
+If any pair cannot open **16379**, gossip stalls: `disconnected` links, slow or missing FAIL promotion, stuck handshakes.
 
 ## CLI command reference
 
