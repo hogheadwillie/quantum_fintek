@@ -9,7 +9,7 @@ QuantumFintek uses Redis for:
 
 | Mode | Config |
 |------|--------|
-| Standalone (default) | `REDIS_MODE=standalone` + `REDIS_URL=redis://redis:6379/0` |
+| Standalone (default) | `REDIS_MODE=standalone` + `REDIS_URL=redis://localhost:6379/0` |
 | Cluster | `REDIS_MODE=cluster` + `REDIS_CLUSTER_NODES=host1:6379,host2:6379,...` |
 
 ## Cluster key design (hash tags)
@@ -24,6 +24,130 @@ QuantumFintek uses Redis for:
 - Denylist lookups are O(1) and spread across slots by JTI.
 - Per-user refresh revoke uses subject-tagged keys in one pipeline (same slot).
 - Multi-key ops must share a hash tag `{...}` or Redis returns CROSSSLOT.
+
+## CLI quick reference
+
+Helpers for the Docker lab overlay. Replace node name as needed.
+
+```bash
+# Shell aliases (optional)
+alias rc1='docker exec -it quantum-fintek-redis-1 redis-cli'
+alias rc1c='docker exec -it quantum-fintek-redis-1 redis-cli -c'   # cluster mode
+```
+
+### Health & topology
+
+```bash
+docker exec quantum-fintek-redis-1 redis-cli PING
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER INFO
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER NODES
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER SLOTS
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER SHARDS   # Redis 7+
+```
+
+### Config (timeouts / validity)
+
+```bash
+docker exec quantum-fintek-redis-1 redis-cli CONFIG GET cluster-node-timeout
+docker exec quantum-fintek-redis-1 redis-cli CONFIG GET cluster-require-full-coverage
+docker exec quantum-fintek-redis-1 redis-cli CONFIG GET cluster-slave-validity-factor
+docker exec quantum-fintek-redis-1 redis-cli CONFIG GET cluster-replica-validity-factor
+
+# Runtime change (may not persist across recreate; prefer compose command args)
+docker exec quantum-fintek-redis-1 redis-cli CONFIG SET cluster-node-timeout 5000
+```
+
+### Failure reports
+
+```bash
+# List nodes; copy a node id from CLUSTER NODES
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER NODES
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER COUNT-FAILURE-REPORTS <node-id>
+```
+
+### Keys & denylist (cluster-aware)
+
+```bash
+# -c follows MOVED redirects
+docker exec quantum-fintek-redis-1 redis-cli -c EXISTS 'qf:deny:{example-jti}'
+docker exec quantum-fintek-redis-1 redis-cli -c TTL 'qf:deny:{example-jti}'
+docker exec quantum-fintek-redis-1 redis-cli -c GET 'qf:deny:{example-jti}'
+
+# Which slot a key maps to
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER KEYSLOT 'qf:deny:{example-jti}'
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER COUNTKEYSINSLOT <slot>
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER GETKEYSINSLOT <slot> 10
+```
+
+### Cluster create / check (lab)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up -d
+
+docker compose -f docker-compose.redis-cluster.yml exec redis-node-1 \
+  redis-cli --cluster create \
+  redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 \
+  --cluster-replicas 0 --cluster-yes
+
+redis-cli --cluster check redis-node-1:6379
+# or from host via docker:
+docker exec quantum-fintek-redis-1 redis-cli --cluster check redis-node-1:6379
+```
+
+### Reshard / rebalance (automation)
+
+```bash
+docker exec -it quantum-fintek-redis-1 redis-cli --cluster reshard redis-node-1:6379
+docker exec -it quantum-fintek-redis-1 redis-cli --cluster rebalance redis-node-1:6379
+docker exec -it quantum-fintek-redis-1 redis-cli --cluster info redis-node-1:6379
+```
+
+### Manual slot migration (one slot)
+
+```bash
+# IDs from CLUSTER NODES
+SRC=<source-node-id>
+DST=<dest-node-id>
+SLOT=1000
+
+# On destination
+docker exec quantum-fintek-redis-2 redis-cli CLUSTER SETSLOT $SLOT IMPORTING $SRC
+# On source
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER SETSLOT $SLOT MIGRATING $DST
+
+# Move keys in batches (run on source; adjust dest host/port)
+while true; do
+  KEYS=$(docker exec quantum-fintek-redis-1 redis-cli CLUSTER GETKEYSINSLOT $SLOT 100)
+  [ -z "$KEYS" ] && break
+  docker exec quantum-fintek-redis-1 redis-cli MIGRATE redis-node-2 6379 "" 0 5000 KEYS $KEYS
+done
+
+# Commit ownership (dest then source; optionally all masters)
+docker exec quantum-fintek-redis-2 redis-cli CLUSTER SETSLOT $SLOT NODE $DST
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER SETSLOT $SLOT NODE $DST
+
+# Abort importing/migrating state on a node
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER SETSLOT $SLOT STABLE
+```
+
+### Manual failover (requires replicas)
+
+```bash
+# On a replica of the target master
+docker exec quantum-fintek-redis-X redis-cli CLUSTER FAILOVER
+docker exec quantum-fintek-redis-X redis-cli CLUSTER FAILOVER FORCE
+docker exec quantum-fintek-redis-X redis-cli CLUSTER FAILOVER TAKEOVER
+```
+
+### Meet / forget (membership)
+
+```bash
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER MEET redis-node-2 6379
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER FORGET <node-id>
+docker exec quantum-fintek-redis-1 redis-cli CLUSTER REPLICAS <master-node-id>
+```
+
+See also [Redis-Cluster.md](./Redis-Cluster.md) for control-plane detail.
 
 ## cluster-node-timeout tuning
 
@@ -95,14 +219,6 @@ Flow:
 3. Majority master reports → **FAIL** + `FAIL` bus broadcast
 4. If the failed node is a master **with a valid replica**, election may promote a new master
 5. Clients see `MOVED` / connection errors / `CLUSTERDOWN` during the window
-
-Inspect:
-
-```bash
-CLUSTER INFO
-CLUSTER NODES
-CLUSTER COUNT-FAILURE-REPORTS <node-id>
-```
 
 ### cluster-slave-validity-factor (replica eligibility)
 
