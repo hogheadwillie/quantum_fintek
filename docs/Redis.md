@@ -147,7 +147,7 @@ docker exec quantum-fintek-redis-1 redis-cli CLUSTER FORGET <node-id>
 docker exec quantum-fintek-redis-1 redis-cli CLUSTER REPLICAS <master-node-id>
 ```
 
-See also [Redis-Cluster.md](./Redis-Cluster.md) for control-plane detail.
+See also [Redis-Cluster.md](./Redis-Cluster.md) for control-plane detail and more diagrams.
 
 ## cluster-node-timeout tuning
 
@@ -257,6 +257,41 @@ Firewall / Docker: nodes need **both** ports reachable to each other. API client
 - ~1 random PING/s (prefer oldest `pong_received`)
 - Compensating PING if silent > `NODE_TIMEOUT/2`
 - PFAIL if outstanding ping > `NODE_TIMEOUT`
+
+### Lab mesh (Mermaid)
+
+Three masters, full bus mesh (QuantumFintek overlay):
+
+```mermaid
+graph LR
+  N1["redis-node-1<br/>master<br/>slots ~0-5460"]
+  N2["redis-node-2<br/>master<br/>slots ~5461-10922"]
+  N3["redis-node-3<br/>master<br/>slots ~10923-16383"]
+
+  N1 <-->|bus 16379| N2
+  N2 <-->|bus 16379| N3
+  N1 <-->|bus 16379| N3
+```
+
+### Client plane vs bus plane (Mermaid)
+
+```mermaid
+flowchart TB
+  API["API / redis-py"]
+  N1[node-1 master]
+  N2[node-2 master]
+  N3[node-3 master]
+
+  API -->|"RESP :6379<br/>slot-routed"| N1
+  API -->|"RESP :6379"| N2
+  API -->|"RESP :6379"| N3
+
+  N1 <-->|"bus :16379"| N2
+  N2 <-->|"bus :16379"| N3
+  N1 <-->|"bus :16379"| N3
+```
+
+More topology diagrams (including 6-node HA mesh): [Redis-Cluster.md](./Redis-Cluster.md).
 
 ## Slot migration (classic, Redis 7)
 
