@@ -1,16 +1,17 @@
 # QuantumFintek™
 
-Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/RBAC security, and quantum-ready optimization hooks.
+Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/RBAC security, quantum-ready optimization, and CMMC-aligned controls.
 
 ## Status
 
-**v0.5.x**
+**v0.6.0-alpha**
 
-- Alembic migrations (identity schema)
-- Register / login (bcrypt) + Redis refresh tokens
-- RBAC on quant & AI routes
-- Web console with auth + quant/AI panels
-- Traefik: rate limits, security headers, dashboard BasicAuth, **ForwardAuth** (`/auth/verify`)
+- Alembic migrations + audit trail on auth events
+- Org + membership created on register
+- RBAC on quant / AI / compliance routes
+- Web console with visual quant & anomaly panels
+- Traefik: rate limits, headers, ForwardAuth, TLS overlay
+- GitHub Actions CI
 
 ## Quick start
 
@@ -28,21 +29,13 @@ docker compose up --build
 ## Traefik
 
 ```bash
-# Local proxy
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up --build
-
-# + ForwardAuth (edge JWT gate on protected routes)
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml -f docker-compose.traefik.auth.yml up --build
-
-# Production TLS
 docker compose -f docker-compose.yml -f docker-compose.traefik.tls.yml up -d --build
 ```
 
-See [`docs/Traefik.md`](docs/Traefik.md).
-
 ## Auth
 
-1. `POST /auth/register` → `POST /auth/login`
-2. Bearer token on `/quant/*`, `/ai/*`, `/auth/me`
-3. `GET /auth/verify` for Traefik ForwardAuth (returns `X-QF-*` headers)
-4. Refresh tokens in Redis with rotation
+1. `POST /auth/register` → creates user + default org (owner)
+2. `POST /auth/login` → JWT with roles + org_id
+3. Bearer required on `/quant/*`, `/ai/*`, `/compliance/*`, `/auth/me`

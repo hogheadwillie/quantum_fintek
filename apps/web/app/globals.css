@@ -129,3 +129,67 @@ pre {
 .bad {
   color: var(--bad);
 }
+
+.viz {
+  margin-top: 16px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 56px;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.bar-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.bar-track {
+  height: 10px;
+  background: #0a0f1c;
+  border-radius: 999px;
+  border: 1px solid #1e2a45;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3d6fd9, #5b8cff);
+  border-radius: 999px;
+}
+
+.bar-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.metric {
+  background: #0a0f1c;
+  border: 1px solid #1e2a45;
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.metric-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

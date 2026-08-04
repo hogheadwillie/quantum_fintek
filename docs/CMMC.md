@@ -1,22 +1,28 @@
-# CMMC Alignment Notes
+# CMMC L2 mapping (subset)
 
-QuantumFintek targets **CMMC Level 2** readiness for potential DoD / defense-adjacent use cases.
+This document tracks how QuantumFintek implements a **subset** of CMMC Level 2 practices. It is not a full certification package.
 
-## Key Control Families (High-Level Mapping)
+## Controls in progress
 
-| Family | Focus                              | Initial Implementation Notes                  |
-|--------|------------------------------------|-----------------------------------------------|
-| AC     | Access Control                     | JWT + RBAC + org tenancy                      |
-| AU     | Audit & Accountability             | Audit Event model + structured logging        |
-| IA     | Identification & Authentication    | MFA hooks, strong password hashing planned    |
-| SC     | System & Communications Protection | TLS everywhere, future post-quantum crypto    |
-| SI     | System & Information Integrity     | Dependency scanning, container scanning CI    |
+| Control | Practice | Implementation |
+|---------|----------|----------------|
+| AC.L2-3.1.1 | Limit system access | JWT auth; RBAC (`analyst`/`quant`/`admin`/`owner`) on quant & AI routes |
+| AU.L2-3.3.1 | Create audit records | `audit_events` table; register/login/logout writes |
+| IA.L2-3.5.1 | Identify users | Email identity; bcrypt hashes; Redis refresh rotation + denylist |
+| SC.L2-3.13.1 | Boundary protection | Traefik edge, TLS overlay, rate limits, optional ForwardAuth |
 
-## Current Status
+## Machine evidence API
 
-- Identity data model defined
-- TokenService interface established
-- Audit Event entity specified
-- Full control evidence collection is future work
+```http
+GET /compliance/evidence
+Authorization: Bearer <token with admin or owner role>
+```
 
-This document is a living checklist, not a formal SSP.
+Returns structured evidence pointers for the controls above.
+
+## Gaps (next)
+
+- Full audit export (SIEM sink)
+- MFA / step-up auth
+- Media protection & key management policy pack
+- Formal SSP / POA&M documents
