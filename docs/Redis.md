@@ -21,6 +21,10 @@ QuantumFintek uses Redis for:
 | `qf:{sub}:rts` | by **subject** | SET of active refresh JTIs |
 | `qf:rtidx:{jti}` | by JTI | JTI → subject reverse index |
 
+- Denylist lookups are O(1) and spread across slots by JTI.
+- Per-user refresh revoke uses subject-tagged keys in one pipeline (same slot).
+- Multi-key ops must share a hash tag `{...}` or Redis returns CROSSSLOT.
+
 ## cluster-node-timeout tuning
 
 Redis default is **15000 ms**. QuantumFintek local cluster overlay uses **5000 ms**.
@@ -38,19 +42,17 @@ Redis default is **15000 ms**. QuantumFintek local cluster overlay uses **5000 m
 - **FAIL report validity**: ~`NODE_TIMEOUT × 2`
 - **Majority loss**: node stops writes after ~`NODE_TIMEOUT` without majority
 
-Approximate detection window (healthy majority, true outage):
-
 ```
 PFAIL  ≈ NODE_TIMEOUT
 FAIL   ≈ NODE_TIMEOUT … 2×NODE_TIMEOUT (gossip majority)
 ```
 
-With **5000 ms**: expect confirmed FAIL on the order of **~5–10 s**.  
+With **5000 ms**: confirmed FAIL often **~5–10 s**.  
 With **15000 ms**: often **~15–30 s**.
 
 ### Important: replicas
 
-This repo’s lab cluster is created with `--cluster-replicas 0` (masters only).  
+Lab cluster is created with `--cluster-replicas 0` (masters only).  
 Lowering `cluster-node-timeout` **speeds failure detection** but **does not promote a new master**. Uncovered slots stay down until the node returns. For HA, recreate with replicas ≥ 1 per master.
 
 ### Client alignment
@@ -61,9 +63,7 @@ Lowering `cluster-node-timeout` **speeds failure detection** but **does not prom
 | `REDIS_SOCKET_TIMEOUT` | 5.0 s | Matches 5 s node-timeout scale |
 | `REDIS_CLUSTER_ERROR_RETRY_ATTEMPTS` | 5 | Retry after MOVED / blips |
 
-Keep **connect timeout < node-timeout**. Raise socket timeout if commands are large or network is slow.
-
-### Change timeout
+Keep **connect timeout < node-timeout**.
 
 ```bash
 # .env
@@ -72,18 +72,96 @@ REDIS_SOCKET_TIMEOUT=8.0
 REDIS_CLUSTER_ERROR_RETRY_ATTEMPTS=5
 ```
 
-Recreate Redis nodes after changing server timeout (config is process startup):
-
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up -d --force-recreate redis-node-1 redis-node-2 redis-node-3
-```
+docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up -d --force-recreate \
+  redis-node-1 redis-node-2 redis-node-3
 
-Verify:
-
-```bash
 docker exec quantum-fintek-redis-1 redis-cli CONFIG GET cluster-node-timeout
-# should print 5000 (or your override)
 ```
+
+## Failure detection (PFAIL → FAIL)
+
+No central monitor. Every node watches peers on the **cluster bus** via gossip.
+
+| State | Meaning |
+|-------|---------|
+| **PFAIL** | Local opinion: no PONG within `NODE_TIMEOUT` |
+| **FAIL** | Majority of **masters** reported PFAIL/FAIL within ~`2×NODE_TIMEOUT` |
+
+Flow:
+
+1. Missed PONG → **PFAIL** (subjective)
+2. Gossip carries PFAIL flags in heartbeat samples
+3. Majority master reports → **FAIL** + `FAIL` bus broadcast
+4. If the failed node is a master **with a valid replica**, election may promote a new master
+5. Clients see `MOVED` / connection errors / `CLUSTERDOWN` during the window
+
+Inspect:
+
+```bash
+CLUSTER INFO
+CLUSTER NODES
+CLUSTER COUNT-FAILURE-REPORTS <node-id>
+```
+
+### cluster-slave-validity-factor (replica eligibility)
+
+After FAIL, a replica may refuse to failover if its data looks too old.
+
+```text
+max_age ≈ (node-timeout × slave-validity-factor) + repl-ping-replica-period
+```
+
+| Value | Behavior |
+|-------|----------|
+| **0** | Always try failover (max availability; possible stale promote) |
+| **10** (default) | Skip failover if disconnected longer than the formula |
+
+Newer Redis names this `cluster-replica-validity-factor` (same meaning).
+
+**Irrelevant until the cluster has replicas.** With `--cluster-replicas 0`, nothing can promote.
+
+## Cluster bus & gossip
+
+| Port | Role |
+|------|------|
+| Client (e.g. **6379**) | RESP: GET/SET, MIGRATE, app traffic |
+| Bus (default **client+10000** → **16379**) | Binary gossip: membership, health, elections |
+
+- Full mesh: every node links to every other on the bus.
+- Frames start with signature **`RCmb`** (Redis Cluster message bus).
+- Heartbeats: **PING / PONG / MEET**; confirmed failure: **FAIL** packet.
+- Header carries sender identity, epochs, and full **16384-bit slot map** (~2 KB).
+- Body gossip samples ~`max(3, N/10)` peers (PFAIL biased).
+
+Firewall / Docker: nodes need **both** ports reachable to each other. API clients use **6379 only**.
+
+`clusterCron` (~10 Hz):
+
+- ~1 random PING/s (prefer oldest `pong_received`)
+- Compensating PING if silent > `NODE_TIMEOUT/2`
+- PFAIL if outstanding ping > `NODE_TIMEOUT`
+
+## Slot migration (classic, Redis 7)
+
+Online reshard without stopping the cluster:
+
+```text
+1) Dest:   CLUSTER SETSLOT <slot> IMPORTING <source-id>
+2) Source: CLUSTER SETSLOT <slot> MIGRATING <dest-id>
+3) Loop:   GETKEYSINSLOT + MIGRATE … KEYS … until empty
+4) Both:   CLUSTER SETSLOT <slot> NODE <dest-id>
+```
+
+| Redirect | Meaning |
+|----------|---------|
+| **ASK** | Temporary: one-shot; client sends `ASKING` then command on dest |
+| **MOVED** | Permanent: update slot map; slot ownership changed |
+
+Automation: `redis-cli --cluster reshard` / `rebalance`.  
+Abort local state: `CLUSTER SETSLOT <slot> STABLE`.
+
+Redis **8.4+** adds server-driven `CLUSTER MIGRATION IMPORT …` (atomic tasks). Lab images are Redis **7** → classic path only.
 
 ## Local cluster overlay
 
@@ -96,6 +174,8 @@ docker compose -f docker-compose.redis-cluster.yml exec redis-node-1 \
 
 docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up --build api
 ```
+
+For HA lab tests, use `--cluster-replicas 1` (needs 6 nodes for 3 masters + 3 replicas) and set validity factor explicitly if desired.
 
 ## Application behavior
 
@@ -112,3 +192,4 @@ docker compose -f docker-compose.yml -f docker-compose.redis-cluster.yml up --bu
 - Prefer non-transactional pipelines under cluster.
 - Do not MULTI/EXEC across keys without identical hash tags.
 - Logout denylist is best-effort under partition; JWT `exp` remains the hard bound.
+- After failover with replicas, denylist keys must have been replicated; async replication can lose a just-written deny until JWT expiry.
