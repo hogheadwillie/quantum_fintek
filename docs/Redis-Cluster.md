@@ -1,6 +1,6 @@
 # Redis Cluster — control plane reference
 
-Companion to [Redis.md](./Redis.md). Focus: bus, gossip, failure detection, migration, replica validity, topology diagrams, and **CLI**.
+Companion to [Redis.md](./Redis.md). Focus: bus, gossip, failure detection, **failover election timeline**, migration, replica validity, topology diagrams, and **CLI**.
 
 ## Ports
 
@@ -46,8 +46,6 @@ For \(N\) nodes:
   M = master owning ~1/3 of 16384 slots
   Each edge = bidirectional TCP bus link (PING/PONG/MEET/FAIL/UPDATE)
 ```
-
-Mermaid (renders on GitHub):
 
 ```mermaid
 graph LR
@@ -140,6 +138,99 @@ docker exec quantum-fintek-redis-1 redis-cli CLUSTER INFO
 ```
 
 If any pair cannot open **16379**, gossip stalls: `disconnected` links, slow or missing FAIL promotion, stuck handshakes.
+
+## Failover election — visual timeline
+
+Times below assume lab **`NODE_TIMEOUT = 5000 ms`** and at least one **valid replica**. With `--cluster-replicas 0`, the timeline **stops after FAIL** (no election).
+
+### ASCII timeline
+
+```text
+t (approx)     Detection                         Election (needs replica)
+─────────────  ───────────────────────────────   ───────────────────────────────
+0              Master M stops responding
+
+~2.5s          Compensating PING / reconnect
+               (NODE_TIMEOUT / 2)
+
+~5s            Peers mark M = PFAIL
+
+~5–10s         Gossip builds majority reports
+               → M = FAIL + FAIL broadcast
+                                                 ┌ rank delay
+                                                 │ DELAY = 500ms + rand(0..500)
+                                                 │         + RANK×1000ms
+                                                 │ rank0 ≈ 0.5–1.0s after FAIL
+                                                 └
+                                                 currentEpoch++
+                                                 FAILOVER_AUTH_REQUEST → masters
+
+                 vote window ≈ max(2s, 2×T) ≈ 10s
+                                                 masters → FAILOVER_AUTH_ACK
+
+                                                 majority ACKs?
+                                                   YES → promote, new configEpoch,
+                                                        claim slots, gossip
+                                                   NO  → retry after ~4×T (~20s)
+
+                                                 Clients: MOVED → new master
+```
+
+### Mermaid timeline (detection + election)
+
+```mermaid
+timeline
+  title Redis Cluster failover (NODE_TIMEOUT = 5s, with replica)
+  section Detection
+    t = 0ms : Master stops responding
+    t ≈ 2500ms : Compensating PING / TCP reconnect
+    t ≈ 5000ms : Local PFAIL on peers
+    t ≈ 5–10s : Majority gossip → FAIL + FAIL broadcast
+  section Election
+    after FAIL + rank delay : Rank-0 replica waits ~0.5–1s
+    election start : currentEpoch++ / AUTH_REQUEST to masters
+    vote window ~10s : Masters send AUTH_ACK (one vote per epoch)
+    majority reached : Promote replica / new configEpoch / claim slots
+    clients : MOVED to new master
+```
+
+### Mermaid sequence (election messages)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant M as Master M (FAIL)
+  participant R0 as Replica rank0
+  participant R1 as Replica rank1
+  participant A as Master A (voter)
+  participant B as Master B (voter)
+  participant C as Client
+
+  Note over M: FAIL via gossip majority
+  R0->>R0: wait DELAY (rank0 shortest)
+  R0->>A: FAILOVER_AUTH_REQUEST (epoch E)
+  R0->>B: FAILOVER_AUTH_REQUEST (epoch E)
+  A-->>R0: FAILOVER_AUTH_ACK
+  B-->>R0: FAILOVER_AUTH_ACK
+  R0->>R0: majority → become master, configEpoch=E
+  R0-->>C: later commands get MOVED to R0
+  Note over R1: longer DELAY; aborts if R0 already won
+```
+
+### Timing cheat sheet (T = node-timeout)
+
+| Phase | Formula | Lab T=5s |
+|-------|---------|----------|
+| Compensating PING | T/2 | ~2.5s |
+| PFAIL | ~T | ~5s |
+| FAIL | ~T … 2T | ~5–10s |
+| Rank delay (rank k) | 500 + rand(0..500) + k×1000 ms | rank0 ~0.5–1s after FAIL |
+| Vote wait | max(2s, 2T) | ~10s |
+| Retry after failed election | max(4s, 4T) | ~20s |
+
+### Lab note
+
+Current overlay: **`--cluster-replicas 0`** → timeline ends at **FAIL**; no AUTH_REQUEST/promote. Add replicas to exercise the election half.
 
 ## CLI command reference
 
