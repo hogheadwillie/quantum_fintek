@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -13,26 +11,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_payload, get_token_service
+from app.core.audit import log_event
 from app.core.security import hash_password, verify_password
-from app.db.models import Membership, Organization, User
+from app.db.models import User
 from app.db.session import get_db
 from app.identity.security import TokenPayload, TokenService
-from app.services.audit import record_audit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_optional = HTTPBearer(auto_error=False)
-
-
-def _slugify(name: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return (s or "org")[:48]
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=8, max_length=128)
-    org_name: str | None = Field(None, max_length=255)
 
 
 class LoginRequest(BaseModel):
@@ -68,7 +60,6 @@ class UserResponse(BaseModel):
     username: str
     status: str
     roles: list[str] = []
-    org_id: str | None = None
 
 
 class TokenRequest(BaseModel):
@@ -92,40 +83,21 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) ->
         status="active",
     )
     db.add(user)
-    await db.flush()
-
-    org_name = body.org_name or f"{body.username}'s Workspace"
-    base_slug = _slugify(org_name)
-    slug = base_slug
-    n = 0
-    while await db.scalar(select(Organization).where(Organization.slug == slug)):
-        n += 1
-        slug = f"{base_slug}-{n}"
-
-    org = Organization(name=org_name, slug=slug, subscription_level="standard")
-    db.add(org)
-    await db.flush()
-
-    membership = Membership(user_id=user.id, organization_id=org.id, role="owner")
-    db.add(membership)
-
-    await record_audit(
-        db,
-        action="auth.register",
-        actor_id=user.id,
-        resource=f"user:{user.id}",
-        detail=f"Registered; org={org.slug}",
-    )
     await db.commit()
     await db.refresh(user)
-
+    await log_event(
+        db,
+        action="auth.register",
+        actor_id=str(user.id),
+        resource=f"user:{user.id}",
+        detail=f"username={user.username} email={user.email}",
+    )
     return UserResponse(
         id=str(user.id),
         email=user.email,
         username=user.username,
         status=user.status,
         roles=["user", "analyst"],
-        org_id=str(org.id),
     )
 
 
@@ -142,24 +114,18 @@ async def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is not active")
 
     user.last_login = datetime.now(timezone.utc)
-
-    membership = await db.scalar(select(Membership).where(Membership.user_id == user.id))
-    org_id = str(membership.organization_id) if membership else None
-    roles = ["user", "analyst"]
-    if membership and membership.role == "owner":
-        roles.append("owner")
-
-    await record_audit(
-        db,
-        action="auth.login",
-        actor_id=user.id,
-        resource=f"user:{user.id}",
-        detail="Login success",
-    )
     await db.commit()
 
-    access = tokens.create_access_token(str(user.id), org_id=org_id, roles=roles)
-    refresh = await tokens.create_refresh_token(str(user.id), roles=roles, org_id=org_id)
+    roles = ["user", "analyst"]
+    access = tokens.create_access_token(str(user.id), roles=roles)
+    refresh = await tokens.create_refresh_token(str(user.id), roles=roles)
+    await log_event(
+        db,
+        action="auth.login",
+        actor_id=str(user.id),
+        resource=f"user:{user.id}",
+        detail=f"username={user.username}",
+    )
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 
@@ -180,8 +146,8 @@ async def logout(
     body: LogoutRequest | None = None,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
     tokens: TokenService = Depends(get_token_service),
-    db: AsyncSession = Depends(get_db),
 ) -> LogoutResponse:
+    """Deny current access JTI in Redis; optionally revoke refresh token."""
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:
@@ -191,20 +157,6 @@ async def logout(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-
-    try:
-        actor = uuid.UUID(result["subject"])
-    except ValueError:
-        actor = None
-    await record_audit(
-        db,
-        action="auth.logout",
-        actor_id=actor,
-        resource=f"user:{result['subject']}",
-        detail="Logout",
-    )
-    await db.commit()
-
     return LogoutResponse(
         detail="Logged out",
         access_jti_denied=result["access_jti_denied"],
@@ -217,28 +169,14 @@ async def logout(
 async def logout_all(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
     tokens: TokenService = Depends(get_token_service),
-    db: AsyncSession = Depends(get_db),
 ) -> LogoutResponse:
+    """Deny current access token and revoke all refresh tokens for the subject."""
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:
         result = await tokens.logout_all(access_token=creds.credentials)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-
-    try:
-        actor = uuid.UUID(result["subject"])
-    except ValueError:
-        actor = None
-    await record_audit(
-        db,
-        action="auth.logout_all",
-        actor_id=actor,
-        resource=f"user:{result['subject']}",
-        detail=f"revoked={result.get('refresh_tokens_revoked')}",
-    )
-    await db.commit()
-
     return LogoutResponse(
         detail="Logged out from all sessions",
         access_jti_denied=result["access_jti_denied"],
@@ -261,7 +199,6 @@ async def me(
         username=user.username,
         status=user.status,
         roles=list(payload.roles or []),
-        org_id=payload.org_id,
     )
 
 
@@ -269,6 +206,7 @@ async def me(
 async def verify_for_forward_auth(
     payload: TokenPayload = Depends(get_current_payload),
 ) -> Response:
+    """Traefik ForwardAuth endpoint — also respects Redis access denylist."""
     response = Response(status_code=status.HTTP_200_OK, content=b"")
     response.headers["X-QF-User-Id"] = payload.sub
     response.headers["X-QF-Roles"] = ",".join(payload.roles or [])
@@ -282,6 +220,7 @@ async def issue_tokens(
     body: TokenRequest,
     tokens: TokenService = Depends(get_token_service),
 ) -> TokenResponse:
+    """Dev-only token minting without password."""
     roles = body.roles or ["user", "analyst"]
     access = tokens.create_access_token(body.subject, org_id=body.org_id, roles=roles)
     refresh = await tokens.create_refresh_token(body.subject, roles=roles, org_id=body.org_id)
