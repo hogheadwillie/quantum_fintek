@@ -18,7 +18,7 @@ import os
 # ── 1. Path setup ────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "apps", "api"))
-for pkg in ["quant-core", "ai-intel"]:
+for pkg in ["quant-core", "ai-intel", "security", "zos-bridge"]:
     src = os.path.join(ROOT, "packages", pkg, "src")
     if os.path.isdir(src):
         sys.path.insert(0, src)

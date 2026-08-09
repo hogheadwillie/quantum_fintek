@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import admin, ai, auth, compliance, orgs, quant, trading, ws
+from app.api.routes import admin, ai, auth, compliance, orgs, quant, trading, ws, zos
 from app.core.config import get_settings
 from app.core.redis import close_redis
 from app.db.session import init_db
@@ -23,7 +23,7 @@ settings = get_settings()
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.7.0",
+    version="0.8.0",
     lifespan=lifespan,
 )
 
@@ -43,18 +43,19 @@ app.include_router(compliance.router)
 app.include_router(trading.router)
 app.include_router(orgs.router)
 app.include_router(ws.router)
+app.include_router(zos.router)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.7.0"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.8.0"}
 
 
 @app.get("/")
 def root():
     return {
         "name": "QuantumFintek",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security", "compliance"],
         "endpoints": {
             "register": "/auth/register",
@@ -73,6 +74,12 @@ def root():
             "trading_positions": "/trading/positions",
             "trading_market_data": "/trading/market-data",
             "orgs": "/orgs",
+            "zos_health": "/zos/health",
+            "zos_lpars": "/zos/lpars",
+            "zos_jobs": "/zos/jobs",
+            "zos_datasets": "/zos/datasets",
+            "zos_transcode": "/zos/transcode",
+            "zos_mqbridge": "/zos/mqbridge",
             "docs": "/docs",
         },
     }

@@ -4,17 +4,18 @@ Enterprise quantitative finance platform: quant analytics, AI intelligence, JWT/
 
 ## Status
 
-**v0.7.0-alpha**
+**v0.8.0-alpha**
 
-- Trading domain: order management (market/limit/stop), positions aggregation, simulated market data
-- Live WebSocket market data stream with GBM tick simulation
-- Org management: create orgs, invite members, role management
-- Admin console UI: audit log viewer + user management table
-- Compliance UI: CMMC L2 evidence viewer with coverage progress
-- Sidebar updated with Trading, Compliance, and Admin Console (admin-role-gated)
-- `packages/security` promoted to a real shared library (JWT helpers, password hashing)
-- Alembic migration 0002: `orders` table
-- CI extended: tsc typecheck + pyright on packages
+- **IBM Z-series / z/OS integration** (`packages/zos-bridge` + `/zos` API router)
+  - EBCDIC ↔ UTF-8 transcoding: 11 code pages (IBM-037, -1047, -1140, -500, …)
+  - MVS dataset record-format parser/builder: F, FB, V, VB, U
+  - RACF access control model: user profiles, group ACEs, permission hierarchy
+  - MQI-compatible MQ bridge: put/get/browse/commit, MQMD envelope, EBCDIC payloads
+  - JCL builder: JOB card, EXEC steps, DD statements — standards-compliant z/OS 2.5+ JCL
+  - LPAR connection model: LPARConfig, z/OSMF REST client stub, live metrics simulation
+- Web UI `/zos` page: sysplex health + LPAR metrics, JCL job monitor, dataset browser, EBCDIC transcoder, MQ bridge panel
+- `docs/ZOS.md`: full integration guide, code pages, RACF, MQ production migration path
+- CI: zos-bridge included in unit tests + pyright
 
 ## Quick start
 

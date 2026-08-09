@@ -391,6 +391,200 @@ export async function apiCompliance(token: string): Promise<ComplianceResponse> 
   return request<ComplianceResponse>('/compliance/evidence', {}, token);
 }
 
+// ── z/OS ──────────────────────────────────────────────────────────────────────
+
+export interface ZOSLPARMetrics {
+  lpar_name: string;
+  status: string;
+  cpu_utilization_pct: number;
+  memory_used_gb: number;
+  memory_total_gb: number;
+  memory_used_pct: number;
+  ziip_utilization_pct: number;
+  active_jobs: number;
+  active_initiators: number;
+  mips: number;
+  timestamp: string;
+}
+
+export interface ZOSHealthResponse {
+  sysplex: string;
+  lpars: ZOSLPARMetrics[];
+  total_lpars: number;
+  online_lpars: number;
+  mq_queues: Record<string, number>;
+}
+
+export interface LPAROut {
+  lpar_name: string;
+  sysplex_name: string;
+  system_nickname: string;
+  zos_version: string;
+  cpu_model: string;
+  max_memory_gb: number;
+  mq_queue_manager: string;
+  status: string;
+}
+
+export interface JobOut {
+  job_id: string;
+  job_name: string;
+  lpar: string;
+  owner: string;
+  status: string;
+  return_code: number | null;
+  abend_code: string | null;
+  completion: string | null;
+  submitted_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export interface JobListResponse {
+  jobs: JobOut[];
+  total: number;
+}
+
+export interface JobSubmitBody {
+  job_name: string;
+  lpar: string;
+  program?: string;
+  parm?: string;
+  jcl?: string;
+  notify_userid?: string;
+  input_dsn?: string;
+}
+
+export interface DatasetOut {
+  dsn: string;
+  recfm: string;
+  lrecl: number;
+  blksize: number;
+  size_tracks: number;
+}
+
+export interface DatasetListResponse {
+  datasets: DatasetOut[];
+  total: number;
+}
+
+export interface DatasetUploadBody {
+  dsn: string;
+  lines: string[];
+  recfm?: string;
+  lrecl?: number;
+  code_page?: string;
+}
+
+export interface DatasetUploadResponse {
+  dsn: string;
+  records_written: number;
+  byte_count: number;
+  recfm: string;
+  lrecl: number;
+  ebcdic_b64: string;
+}
+
+export interface DatasetDownloadBody {
+  dsn: string;
+  code_page?: string;
+  max_records?: number;
+}
+
+export interface DatasetDownloadResponse {
+  dsn: string;
+  records: string[];
+  record_count: number;
+  code_page: string;
+}
+
+export interface TranscodeBody {
+  text: string;
+  code_page?: string;
+  record_length?: number;
+  mode?: string;
+  include_hex_dump?: boolean;
+}
+
+export interface TranscodeResponse {
+  code_page: string;
+  mode: string;
+  record_length: number;
+  ebcdic_b64: string;
+  byte_count: number;
+  hex_dump: string | null;
+}
+
+export interface MQBridgeStatusResponse {
+  queue_manager: string;
+  connected: boolean;
+  queues: Record<string, number>;
+}
+
+export interface MQPutBody {
+  queue_name: string;
+  payload: string;
+  msg_type?: string;
+  reply_to_q?: string;
+  persist?: boolean;
+}
+
+export interface MQPutResponse {
+  queue_name: string;
+  msg_id: string;
+  queue_depth: number;
+}
+
+export interface MQGetResponse {
+  queue_name: string;
+  msg_id: string | null;
+  payload: string | null;
+  msg_type: string | null;
+  put_time: string | null;
+  queue_depth: number;
+}
+
+export async function apiZosHealth(token: string): Promise<ZOSHealthResponse> {
+  return request<ZOSHealthResponse>('/zos/health', {}, token);
+}
+
+export async function apiZosLpars(token: string): Promise<LPAROut[]> {
+  return request<LPAROut[]>('/zos/lpars', {}, token);
+}
+
+export async function apiZosJobs(token: string, lpar = 'SYSA'): Promise<JobListResponse> {
+  return request<JobListResponse>(`/zos/jobs?lpar=${lpar}`, {}, token);
+}
+
+export async function apiZosSubmitJob(token: string, body: JobSubmitBody): Promise<JobOut> {
+  return request<JobOut>('/zos/jobs', { method: 'POST', body: JSON.stringify(body) }, token);
+}
+
+export const apiZosDatasets = {
+  list: (token: string, hlq = 'QFINTEK') =>
+    request<DatasetListResponse>(`/zos/datasets?hlq=${encodeURIComponent(hlq)}`, {}, token),
+  upload: (token: string, body: DatasetUploadBody) =>
+    request<DatasetUploadResponse>('/zos/datasets/upload', { method: 'POST', body: JSON.stringify(body) }, token),
+  download: (token: string, body: DatasetDownloadBody) =>
+    request<DatasetDownloadResponse>('/zos/datasets/download', { method: 'POST', body: JSON.stringify(body) }, token),
+};
+
+export async function apiZosTranscode(token: string, body: TranscodeBody): Promise<TranscodeResponse> {
+  return request<TranscodeResponse>('/zos/transcode', { method: 'POST', body: JSON.stringify(body) }, token);
+}
+
+export async function apiZosMQStatus(token: string): Promise<MQBridgeStatusResponse> {
+  return request<MQBridgeStatusResponse>('/zos/mqbridge', {}, token);
+}
+
+export async function apiZosMQPut(token: string, body: MQPutBody): Promise<MQPutResponse> {
+  return request<MQPutResponse>('/zos/mqbridge/put', { method: 'POST', body: JSON.stringify(body) }, token);
+}
+
+export async function apiZosMQGet(token: string, queueName: string): Promise<MQGetResponse> {
+  return request<MQGetResponse>(`/zos/mqbridge/get?queue_name=${encodeURIComponent(queueName)}`, {}, token);
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 export function sampleReturns(n = 252): number[] {

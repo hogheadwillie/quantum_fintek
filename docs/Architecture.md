@@ -1,9 +1,12 @@
-# QuantumFintek Architecture
+# QuantumFintek Architecture — v0.8.0
 
 ## Core Domains
 
-1. **Trading Platform**  
+1. **Trading Platform**
    Order management, market data ingestion, execution adapters, risk gates.
+
+6. **IBM Z-series / z/OS Integration** (`packages/zos-bridge`)
+   EBCDIC ↔ UTF-8 transcoding (11 code pages), MVS dataset record-format parsing (F/FB/V/VB/U), RACF access control simulation, MQI-compatible message envelope, JCL builder, LPAR/z/OSMF connection model.
 
 2. **Quantitative Engine** (`packages/quant-core`)  
    Portfolio optimization, risk models (VaR, CVaR), factor models, backtesting, quantum-ready QUBO / VQE interfaces.
@@ -23,12 +26,18 @@
 ┌─────────────────┐     ┌──────────────────┐     ┌────────────────┐
 │  Next.js Web    │────▶│  FastAPI Gateway │────▶│  Identity / JWT │
 │  (apps/web)     │     │  (apps/api)      │     │  + RBAC         │
-└─────────────────┘     └───────────┬─────────┘     └────────────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    ▼            ▼            ▼
-             quant-core     ai-intel     trading
-             (packages)     (packages)   (apps)
+└─────────────────┘     └───────────┬──────┘     └────────────────┘
+                                    │
+              ┌──────────┬──────────┼──────────┬──────────┐
+              ▼          ▼          ▼          ▼          ▼
+         quant-core  ai-intel   trading     orgs     zos-bridge
+         (packages) (packages)  (apps)    (apps)    (packages)
+                                                        │
+                                             ┌──────────▼──────────┐
+                                             │  IBM Z LPAR          │
+                                             │  z/OS 2.5/3.1        │
+                                             │  JES2 · MQ · RACF    │
+                                             └─────────────────────┘
 ```
 
 ## Deployment Model
@@ -56,5 +65,6 @@
 | Quant          | NumPy / SciPy / pandas + Qiskit |
 | AI             | scikit-learn / PyTorch + Grok API |
 | Data           | PostgreSQL + Timescale / Redis  |
+| Mainframe      | IBM z/OS 2.5/3.1 via z/OSMF REST + pymqi |
 | Orchestration  | Kubernetes + Helm               |
 | IaC            | Terraform                       |
