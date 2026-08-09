@@ -215,6 +215,182 @@ export async function apiSentiment(
   );
 }
 
+// ── trading ───────────────────────────────────────────────────────────────────
+
+export interface OrderOut {
+  id: string;
+  symbol: string;
+  side: string;
+  order_type: string;
+  quantity: number;
+  limit_price: number | null;
+  stop_price: number | null;
+  status: string;
+  fill_price: number | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  actor_id: string;
+}
+
+export interface OrderListResponse {
+  orders: OrderOut[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface PositionItem {
+  symbol: string;
+  quantity: number;
+  avg_fill_price: number;
+  current_value_estimate: number;
+  side: string;
+}
+
+export interface PositionsResponse {
+  positions: PositionItem[];
+  total_symbols: number;
+}
+
+export interface MarketQuote {
+  symbol: string;
+  bid: number;
+  ask: number;
+  last: number;
+  volume: number;
+  change_pct: number;
+  timestamp: string;
+}
+
+export interface MarketDataResponse {
+  quotes: MarketQuote[];
+}
+
+export interface PlaceOrderBody {
+  symbol: string;
+  side: 'buy' | 'sell';
+  order_type: 'market' | 'limit' | 'stop';
+  quantity: number;
+  limit_price?: number;
+  stop_price?: number;
+  notes?: string;
+}
+
+export async function apiPlaceOrder(
+  token: string,
+  body: PlaceOrderBody,
+): Promise<OrderOut> {
+  return request<OrderOut>(
+    '/trading/orders',
+    { method: 'POST', body: JSON.stringify(body) },
+    token,
+  );
+}
+
+export async function apiListOrders(
+  token: string,
+  page = 1,
+  pageSize = 50,
+): Promise<OrderListResponse> {
+  return request<OrderListResponse>(
+    `/trading/orders?page=${page}&page_size=${pageSize}`,
+    {},
+    token,
+  );
+}
+
+export async function apiPositions(token: string): Promise<PositionsResponse> {
+  return request<PositionsResponse>('/trading/positions', {}, token);
+}
+
+export async function apiMarketData(
+  token: string,
+  symbols = 'AAPL,MSFT,GOOGL,AMZN,NVDA',
+): Promise<MarketDataResponse> {
+  return request<MarketDataResponse>(
+    `/trading/market-data?symbols=${encodeURIComponent(symbols)}`,
+    {},
+    token,
+  );
+}
+
+// ── admin ─────────────────────────────────────────────────────────────────────
+
+export interface AuditEventOut {
+  id: string;
+  actor_id: string | null;
+  action: string;
+  resource: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface AuditListResponse {
+  events: AuditEventOut[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface UserOut {
+  id: string;
+  email: string;
+  username: string;
+  status: string;
+  created_at: string;
+  last_login: string | null;
+}
+
+export interface UserListResponse {
+  users: UserOut[];
+  total: number;
+}
+
+export async function apiAdminAudit(
+  token: string,
+  page = 1,
+  pageSize = 100,
+): Promise<AuditListResponse> {
+  return request<AuditListResponse>(
+    `/admin/audit?page=${page}&page_size=${pageSize}`,
+    {},
+    token,
+  );
+}
+
+export async function apiAdminUsers(
+  token: string,
+  page = 1,
+  pageSize = 100,
+): Promise<UserListResponse> {
+  return request<UserListResponse>(
+    `/admin/users?page=${page}&page_size=${pageSize}`,
+    {},
+    token,
+  );
+}
+
+// ── compliance ────────────────────────────────────────────────────────────────
+
+export interface EvidenceItem {
+  control: string;
+  title: string;
+  status: string;
+  evidence: string;
+  collected_at: string;
+}
+
+export interface ComplianceResponse {
+  framework: string;
+  items: EvidenceItem[];
+  audit_event_count: number;
+}
+
+export async function apiCompliance(token: string): Promise<ComplianceResponse> {
+  return request<ComplianceResponse>('/compliance/evidence', {}, token);
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 export function sampleReturns(n = 252): number[] {

@@ -23,6 +23,21 @@ const NAV = [
     ],
   },
   {
+    section: 'Markets',
+    items: [
+      {
+        href: '/trading',
+        label: 'Trading',
+        icon: (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+            <polyline points="17 6 23 6 23 12"/>
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     section: 'Analytics',
     items: [
       {
@@ -41,6 +56,32 @@ const NAV = [
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    section: 'Enterprise',
+    items: [
+      {
+        href: '/compliance',
+        label: 'Compliance',
+        adminOnly: true,
+        icon: (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        ),
+      },
+      {
+        href: '/admin',
+        label: 'Admin Console',
+        adminOnly: true,
+        icon: (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
           </svg>
         ),
       },
@@ -71,6 +112,8 @@ export default function Sidebar() {
     ? user.username.slice(0, 2).toUpperCase()
     : '??';
 
+  const isAdmin = user?.roles.some((r) => ['admin', 'owner'].includes(r));
+
   return (
     <aside className="sidebar">
       {/* Logo */}
@@ -78,26 +121,32 @@ export default function Sidebar() {
         <div className="sidebar-logo-mark">QF</div>
         <div>
           <div className="sidebar-logo-text">QuantumFintek</div>
-          <div className="sidebar-logo-sub">v0.6 · Enterprise</div>
+          <div className="sidebar-logo-sub">v0.7 · Enterprise</div>
         </div>
       </div>
 
       {/* Nav */}
-      {NAV.map((group) => (
-        <div key={group.section}>
-          <div className="sidebar-section">{group.section}</div>
-          {group.items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`sidebar-link${pathname.startsWith(item.href) ? ' active' : ''}`}
-            >
-              {item.icon}
-              {item.label}
-            </Link>
-          ))}
-        </div>
-      ))}
+      {NAV.map((group) => {
+        const visibleItems = group.items.filter(
+          (item) => !('adminOnly' in item && item.adminOnly && !isAdmin),
+        );
+        if (visibleItems.length === 0) return null;
+        return (
+          <div key={group.section}>
+            <div className="sidebar-section">{group.section}</div>
+            {visibleItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`sidebar-link${pathname.startsWith(item.href) ? ' active' : ''}`}
+              >
+                {item.icon}
+                {item.label}
+              </Link>
+            ))}
+          </div>
+        );
+      })}
 
       {/* User footer */}
       {user && (
