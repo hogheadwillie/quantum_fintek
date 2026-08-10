@@ -9,6 +9,7 @@ from app.api.routes import admin, ai, auth, compliance, orgs, quant, trading, ws
 from app.core.config import get_settings
 from app.core.redis import close_redis
 from app.db.session import init_db
+from app.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
@@ -23,7 +24,7 @@ settings = get_settings()
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.8.0",
+    version="0.9.0",
     lifespan=lifespan,
 )
 
@@ -33,6 +34,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+app.add_middleware(
+    RateLimitMiddleware,
+    trading_limit=getattr(settings, "rate_limit_trading", 60),
+    global_limit=getattr(settings, "rate_limit_global", 600),
+    window_seconds=getattr(settings, "rate_limit_window", 60),
 )
 
 app.include_router(auth.router)
@@ -48,7 +55,7 @@ app.include_router(zos.router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.8.0"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.9.0"}
 
 
 @app.get("/")

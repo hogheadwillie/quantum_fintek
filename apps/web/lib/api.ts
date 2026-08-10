@@ -585,6 +585,79 @@ export async function apiZosMQGet(token: string, queueName: string): Promise<MQG
   return request<MQGetResponse>(`/zos/mqbridge/get?queue_name=${encodeURIComponent(queueName)}`, {}, token);
 }
 
+
+// ── orgs ──────────────────────────────────────────────────────────────────────
+
+export interface OrgOut {
+  id: string;
+  name: string;
+  slug: string;
+  subscription_level: string;
+}
+
+export interface MemberOut {
+  user_id: string;
+  username: string;
+  email: string;
+  role: string;
+}
+
+export interface OrgDetailResponse {
+  org: OrgOut;
+  members: MemberOut[];
+}
+
+export async function apiListOrgs(token: string): Promise<OrgOut[]> {
+  return request<OrgOut[]>('/orgs', {}, token);
+}
+
+export async function apiCreateOrg(
+  token: string,
+  name: string,
+  slug: string,
+): Promise<OrgOut> {
+  return request<OrgOut>('/orgs', { method: 'POST', body: JSON.stringify({ name, slug }) }, token);
+}
+
+export async function apiGetOrg(token: string, orgId: string): Promise<OrgDetailResponse> {
+  return request<OrgDetailResponse>(`/orgs/${orgId}`, {}, token);
+}
+
+export async function apiInviteMember(
+  token: string,
+  orgId: string,
+  email: string,
+  role = 'member',
+): Promise<MemberOut> {
+  return request<MemberOut>(
+    `/orgs/${orgId}/members`,
+    { method: 'POST', body: JSON.stringify({ email, role }) },
+    token,
+  );
+}
+
+export async function apiUpdateMemberRole(
+  token: string,
+  orgId: string,
+  userId: string,
+  role: string,
+): Promise<MemberOut> {
+  return request<MemberOut>(
+    `/orgs/${orgId}/members/${userId}`,
+    { method: 'PATCH', body: JSON.stringify({ role }) },
+    token,
+  );
+}
+
+export async function apiRemoveMember(
+  token: string,
+  orgId: string,
+  userId: string,
+): Promise<void> {
+  await request<void>(`/orgs/${orgId}/members/${userId}`, { method: 'DELETE' }, token);
+}
+
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 export function sampleReturns(n = 252): number[] {
