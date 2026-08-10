@@ -36,3 +36,9 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dev server logs
+dev_api.log
+dev_api_err.log
+dev_api.log.bak
+dev_api_err.log.bak
