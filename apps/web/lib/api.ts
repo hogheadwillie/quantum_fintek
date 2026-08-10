@@ -391,6 +391,70 @@ export async function apiCompliance(token: string): Promise<ComplianceResponse> 
   return request<ComplianceResponse>('/compliance/evidence', {}, token);
 }
 
+// ── z/OS mainframe compliance ─────────────────────────────────────────────────
+
+export interface MainframeControlOut {
+  control_id: string;
+  family: string;
+  title: string;
+  description: string;
+  framework: string;
+  status: string;
+  evidence: string;
+  technical_details: Record<string, unknown>;
+  collected_at: string;
+}
+
+export interface MainframeEvidenceResponse {
+  lpars_online: number;
+  lpars_total: number;
+  racf_profiles_active: number;
+  mq_queues_monitored: number;
+  datasets_catalogued: number;
+  implemented_count: number;
+  partial_count: number;
+  total_controls: number;
+  generated_at: string;
+  controls: MainframeControlOut[];
+}
+
+export interface MainframeAuditEventOut {
+  id: string;
+  actor_id: string | null;
+  lpar_name: string;
+  sysplex_name: string;
+  event_type: string;
+  resource: string;
+  action: string;
+  outcome: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface MainframeAuditListResponse {
+  events: MainframeAuditEventOut[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function apiZosCompliance(token: string): Promise<MainframeEvidenceResponse> {
+  return request<MainframeEvidenceResponse>('/compliance/zos', {}, token);
+}
+
+export async function apiZosAuditLog(
+  token: string,
+  params: { page?: number; page_size?: number; event_type?: string; lpar_name?: string } = {},
+): Promise<MainframeAuditListResponse> {
+  const q = new URLSearchParams();
+  if (params.page)       q.set('page', String(params.page));
+  if (params.page_size)  q.set('page_size', String(params.page_size));
+  if (params.event_type) q.set('event_type', params.event_type);
+  if (params.lpar_name)  q.set('lpar_name', params.lpar_name);
+  const qs = q.toString();
+  return request<MainframeAuditListResponse>(`/compliance/zos/audit${qs ? '?' + qs : ''}`, {}, token);
+}
+
 // ── z/OS ──────────────────────────────────────────────────────────────────────
 
 export interface ZOSLPARMetrics {

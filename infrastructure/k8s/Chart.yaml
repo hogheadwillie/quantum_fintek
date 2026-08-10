@@ -1,0 +1,14 @@
+apiVersion: v2
+name: quantum-fintek
+description: QuantumFintek enterprise quantitative finance platform
+type: application
+version: 0.9.0
+appVersion: "0.9.0"
+maintainers:
+  - name: QuantumFintek Engineering
+keywords:
+  - fintech
+  - quantitative-finance
+  - ibm-z
+  - fastapi
+  - nextjs

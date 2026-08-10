@@ -15,6 +15,13 @@ from .racf import RACFProfile, RACFPermission, RACFAccessList
 from .mq import MQMessage, MQQueue, MQBridgeAdapter
 from .jcl import JCLJob, JCLStep, JobStatus, JCLBuilder
 from .lpar import LPARConnection, LPARConfig
+from .compliance import (
+    ControlStatus,
+    ControlFramework,
+    MainframeControl,
+    MainframeEvidenceReport,
+    MainframeComplianceCollector,
+)
 
 __all__ = [
     "EbcdicCodec", "CodePage",
@@ -23,4 +30,6 @@ __all__ = [
     "MQMessage", "MQQueue", "MQBridgeAdapter",
     "JCLJob", "JCLStep", "JobStatus", "JCLBuilder",
     "LPARConnection", "LPARConfig",
+    "ControlStatus", "ControlFramework",
+    "MainframeControl", "MainframeEvidenceReport", "MainframeComplianceCollector",
 ]

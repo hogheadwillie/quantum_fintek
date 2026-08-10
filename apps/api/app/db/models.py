@@ -1,4 +1,4 @@
-"""Identity data models (foundation for Alembic migrations)."""
+"""Identity and mainframe data models (foundation for Alembic migrations)."""
 
 from __future__ import annotations
 
@@ -82,3 +82,24 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class MainframeAuditEvent(Base):
+    """Audit trail for IBM z/OS sourced events (RACF, JCL jobs, MQ messages)."""
+
+    __tablename__ = "mainframe_audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    # Source LPAR / system
+    lpar_name: Mapped[str] = mapped_column(String(8), index=True, default="")
+    sysplex_name: Mapped[str] = mapped_column(String(8), default="")
+    # Event classification
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    # e.g. "racf.access_check" | "jcl.job_submit" | "mq.put" | "mq.get" | "dataset.open"
+    resource: Mapped[str] = mapped_column(String(255), default="")
+    action: Mapped[str] = mapped_column(String(128), default="")
+    outcome: Mapped[str] = mapped_column(String(16), default="success")
+    # e.g. "success" | "denied" | "error"
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

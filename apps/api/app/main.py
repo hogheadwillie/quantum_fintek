@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import admin, ai, auth, compliance, orgs, quant, trading, ws, zos
+from app.api.routes import admin, ai, auth, compliance, notifications, orgs, quant, trading, ws, zos
 from app.core.config import get_settings
+from app.core.logging import StructuredLoggingMiddleware, setup_logging
 from app.core.redis import close_redis
 from app.db.session import init_db
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -14,6 +15,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    setup_logging()
     await init_db()
     yield
     await close_redis()
@@ -51,6 +53,9 @@ app.include_router(trading.router)
 app.include_router(orgs.router)
 app.include_router(ws.router)
 app.include_router(zos.router)
+app.include_router(notifications.router)
+
+app.add_middleware(StructuredLoggingMiddleware)
 
 
 @app.get("/health")
@@ -62,7 +67,7 @@ def health():
 def root():
     return {
         "name": "QuantumFintek",
-        "version": "0.8.0",
+        "version": "0.9.0",
         "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security", "compliance"],
         "endpoints": {
             "register": "/auth/register",
@@ -77,6 +82,9 @@ def root():
             "admin_audit": "/admin/audit",
             "admin_users": "/admin/users",
             "compliance_evidence": "/compliance/evidence",
+            "compliance_zos": "/compliance/zos",
+            "compliance_zos_audit": "/compliance/zos/audit",
+            "notifications": "/notifications",
             "trading_orders": "/trading/orders",
             "trading_positions": "/trading/positions",
             "trading_market_data": "/trading/market-data",

@@ -1,0 +1,133 @@
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  imageRegistry: ""        # e.g. ghcr.io/hogheadwillie
+  imagePullPolicy: IfNotPresent
+  storageClass: "standard"
+
+# ── API (FastAPI) ──────────────────────────────────────────────────────────────
+api:
+  enabled: true
+  image:
+    repository: quantum-fintek-api
+    tag: "0.9.0"
+  replicaCount: 2
+  port: 8000
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  env:
+    APP_ENV: "production"
+    REDIS_MODE: "standalone"
+  secrets:
+    # Mounted from a Kubernetes Secret named quantum-fintek-api-secret
+    - name: SECRET_KEY
+    - name: DATABASE_URL
+    - name: REDIS_URL
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# ── Web (Next.js) ──────────────────────────────────────────────────────────────
+web:
+  enabled: true
+  image:
+    repository: quantum-fintek-web
+    tag: "0.9.0"
+  replicaCount: 2
+  port: 3000
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  env:
+    NODE_ENV: "production"
+    NEXT_PUBLIC_API_URL: "https://api.quantumfintek.io"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 75
+
+# ── PostgreSQL ─────────────────────────────────────────────────────────────────
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  port: 5432
+  storage:
+    size: "20Gi"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  # Credentials — override via Secret in production
+  db: quantum_fintek
+  user: quantum
+  passwordSecretName: quantum-fintek-pg-secret
+  passwordSecretKey: POSTGRES_PASSWORD
+
+# ── Redis ──────────────────────────────────────────────────────────────────────
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+  port: 6379
+  storage:
+    size: "2Gi"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# ── Ingress ────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    api:
+      host: api.quantumfintek.io
+      path: /
+    web:
+      host: app.quantumfintek.io
+      path: /
+  tls:
+    - secretName: quantumfintek-tls
+      hosts:
+        - api.quantumfintek.io
+        - app.quantumfintek.io
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+namespace: quantumfintek

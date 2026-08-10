@@ -24,10 +24,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import uuid as _uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_roles
+from app.db.models import MainframeAuditEvent
+from app.db.session import get_db
 from app.identity.security import TokenPayload
 from zos_bridge.codec import CodePage, EbcdicCodec
 from zos_bridge.dataset import DatasetParser, RecordFormat
@@ -285,6 +290,44 @@ def _lpar_conn(lpar_name: str) -> LPARConnection:
     return conn
 
 
+async def _record_mf_audit(
+    db: AsyncSession,
+    *,
+    event_type: str,
+    lpar_name: str = "",
+    sysplex_name: str = "",
+    resource: str = "",
+    action: str = "",
+    outcome: str = "success",
+    detail: str = "",
+    actor_id: str | None = None,
+) -> None:
+    """Insert a mainframe audit event; silently swallows errors."""
+    try:
+        actor_uuid: _uuid.UUID | None = None
+        try:
+            actor_uuid = _uuid.UUID(actor_id) if actor_id else None
+        except (ValueError, AttributeError):
+            pass
+        ev = MainframeAuditEvent(
+            actor_id=actor_uuid,
+            lpar_name=lpar_name.upper()[:8],
+            sysplex_name=sysplex_name.upper()[:8],
+            event_type=event_type,
+            resource=resource,
+            action=action,
+            outcome=outcome,
+            detail=detail[:2000],
+        )
+        db.add(ev)
+        await db.commit()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
 def _job_to_out(j: JobStatus, lpar: str) -> JobOut:
     return JobOut(
         job_id=j.job_id,
@@ -502,9 +545,10 @@ def list_jobs(
 
 
 @router.post("/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
-def submit_job(
+async def submit_job(
     body: JobSubmitRequest,
     user: TokenPayload = Analyst,
+    db: AsyncSession = Depends(get_db),
 ) -> JobOut:
     """Submit a JCL job to z/OS (stub: simulates JES2 accept + execution)."""
     _lpar_conn(body.lpar)  # validates LPAR exists
@@ -533,6 +577,20 @@ def submit_job(
     )
     _simulate_job_completion(job)
     _jobs[job_id] = job
+
+    cfg = _lpar_connections.get(body.lpar.upper())
+    sysplex = cfg.config.sysplex_name if cfg else ""
+    await _record_mf_audit(
+        db,
+        event_type="jcl.job_submit",
+        lpar_name=body.lpar,
+        sysplex_name=sysplex,
+        resource=f"JOB:{job_id}",
+        action=f"SUBMIT {body.job_name.upper()[:8]}",
+        outcome="success" if job.completion and job.completion.value == "CC" else "error",
+        detail=f"RC={job.return_code} ABEND={job.abend_code} PGM={body.program or 'JCL'}",
+        actor_id=user.sub,
+    )
     return _job_to_out(job, body.lpar)
 
 
@@ -576,9 +634,10 @@ def mq_status(_user: TokenPayload = Analyst) -> MQBridgeStatusResponse:
 
 
 @router.post("/mqbridge/put", response_model=MQPutResponse)
-def mq_put(
+async def mq_put(
     body: MQPutRequest,
     user: TokenPayload = Analyst,
+    db: AsyncSession = Depends(get_db),
 ) -> MQPutResponse:
     """Put a message onto a z/OS MQ queue."""
     try:
@@ -596,6 +655,15 @@ def mq_put(
         msg_id = _mq_adapter.put(body.queue_name, msg)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    await _record_mf_audit(
+        db,
+        event_type="mq.put",
+        resource=body.queue_name,
+        action="MQPUT",
+        outcome="success",
+        detail=f"MSG_ID={msg_id} TYPE={body.msg_type} PERSIST={body.persist}",
+        actor_id=user.sub,
+    )
     return MQPutResponse(
         queue_name=body.queue_name,
         msg_id=msg_id,
@@ -629,9 +697,10 @@ def mq_get(
 # ── RACF ──────────────────────────────────────────────────────────────────────
 
 @router.post("/racf/check", response_model=RACFCheckResponse)
-def racf_check(
+async def racf_check(
     body: RACFCheckRequest,
-    _user: TokenPayload = Analyst,
+    user: TokenPayload = Analyst,
+    db: AsyncSession = Depends(get_db),
 ) -> RACFCheckResponse:
     """Evaluate effective RACF permission for a user on a resource (simulation)."""
     profile = RACFProfile(
@@ -648,9 +717,19 @@ def racf_check(
     acl.permit("SYS1",   RACFPermission.ALTER,  "GROUP")
     acl.permit("FINGRP", RACFPermission.UPDATE, "GROUP")
     perm = acl.check(profile)
+    permitted = perm >= RACFPermission.READ
+    await _record_mf_audit(
+        db,
+        event_type="racf.access_check",
+        resource=f"{body.resource_class}:{body.resource_name}",
+        action=f"ACCESS CHECK userid={body.userid}",
+        outcome="success" if permitted else "denied",
+        detail=f"effective_permission={perm.name} groups={body.groups}",
+        actor_id=user.sub,
+    )
     return RACFCheckResponse(
         userid=profile.userid,
         resource_name=body.resource_name,
         effective_permission=perm.name,
-        permitted=perm >= RACFPermission.READ,
+        permitted=permitted,
     )

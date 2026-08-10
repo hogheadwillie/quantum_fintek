@@ -1,0 +1,61 @@
+{{- if .Values.redis.enabled -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "quantum-fintek.fullname" . }}-redis
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "quantum-fintek.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "quantum-fintek.fullname" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "quantum-fintek.selectorLabels" (dict "root" . "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "quantum-fintek.selectorLabels" (dict "root" . "component" "redis") | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["redis-server", "--appendonly", "yes", "--save", "60 1"]
+          ports:
+            - containerPort: {{ .Values.redis.port }}
+              name: redis
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "quantum-fintek.fullname" . }}-redis
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "quantum-fintek.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.redis.port }}
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "quantum-fintek.selectorLabels" (dict "root" . "component" "redis") | nindent 4 }}
+{{- end }}
