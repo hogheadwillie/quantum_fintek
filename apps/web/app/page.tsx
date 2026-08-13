@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from 'react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const TOKEN_KEY = 'qf_access_token';
+const REFRESH_KEY = 'qf_refresh_token';
 
 function sampleReturns(n = 252): number[] {
   const out: number[] = [];
@@ -19,15 +20,40 @@ function sampleMatrix(rows = 40, cols = 4): number[][] {
   );
 }
 
+/** Extract a readable error from FastAPI responses (string or validation list). */
+function parseApiError(data: unknown, fallback: string): string {
+  if (!data || typeof data !== 'object') return fallback;
+  const d = data as Record<string, unknown>;
+  if (typeof d.detail === 'string') return d.detail;
+  if (Array.isArray(d.detail)) {
+    return d.detail
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const obj = item as Record<string, unknown>;
+          const loc = Array.isArray(obj.loc) ? obj.loc.slice(1).join('.') : '';
+          const msg = typeof obj.msg === 'string' ? obj.msg : JSON.stringify(obj);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(item);
+      })
+      .join('; ');
+  }
+  if (d.detail !== undefined) return JSON.stringify(d.detail);
+  return fallback;
+}
+
 type OptimizeResult = { weights: number[]; n_assets: number };
 type RiskResult = { historical_var: number; cvar: number; volatility_annual: number };
 type AnomalyResult = { labels: number[]; scores: number[]; n_anomalies: number };
 
 export default function HomePage() {
   const [token, setToken] = useState('');
-  const [email, setEmail] = useState('analyst@quantumfintek.local');
-  const [username, setUsername] = useState('analyst');
-  const [password, setPassword] = useState('changeme123');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [me, setMe] = useState('');
   const [quant, setQuant] = useState<OptimizeResult | null>(null);
   const [risk, setRisk] = useState<RiskResult | null>(null);
@@ -41,9 +67,10 @@ export default function HomePage() {
     if (saved) setToken(saved);
   }, []);
 
-  function saveToken(t: string) {
-    setToken(t);
-    localStorage.setItem(TOKEN_KEY, t);
+  function saveTokens(access: string, refresh?: string) {
+    setToken(access);
+    localStorage.setItem(TOKEN_KEY, access);
+    if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
   }
 
   function logout() {
@@ -53,46 +80,79 @@ export default function HomePage() {
     setRisk(null);
     setAnomaly(null);
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
   }
 
-  async function register(e: FormEvent) {
+  function switchMode(next: 'login' | 'register') {
+    setMode(next);
+    setError('');
+    setInfo('');
+    setConfirmPassword('');
+  }
+
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError('');
     setInfo('');
-    try {
-      const res = await fetch(`${API_URL}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, username, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
-      setInfo(`Registered ${data.username} (org ${data.org_id || 'created'}). Log in.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Register failed');
-    } finally {
-      setLoading(false);
-    }
-  }
 
-  async function login(e: FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    setInfo('');
     try {
-      const res = await fetch(`${API_URL}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
-      saveToken(data.access_token);
-      setInfo('Logged in.');
+      if (mode === 'register') {
+        if (password.length < 8) {
+          throw new Error('Password must be at least 8 characters');\n        }
+        if (password !== confirmPassword) {
+          throw new Error('Passwords do not match');
+        }
+        if (!username.trim()) {
+          throw new Error('Username is required');
+        }
+
+        // Register
+        const regRes = await fetch(`${API_URL}/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email.trim(),
+            username: username.trim(),
+            password,
+          }),
+        });
+        const regData = await regRes.json();
+        if (!regRes.ok) {
+          throw new Error(parseApiError(regData, `Register failed (HTTP ${regRes.status})`));
+        }
+
+        // Auto-login after successful registration
+        const loginRes = await fetch(`${API_URL}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email.trim(), password }),
+        });
+        const loginData = await loginRes.json();
+        if (!loginRes.ok) {
+          setInfo(`Account created for ${regData.username}. Please log in.`);
+          setMode('login');
+          return;
+        }
+
+        saveTokens(loginData.access_token, loginData.refresh_token);
+        setInfo(`Welcome, ${regData.username}! Account created and signed in.`);
+      } else {
+        // Login
+        const res = await fetch(`${API_URL}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email.trim(), password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(parseApiError(data, `Login failed (HTTP ${res.status})`));
+        }
+        saveTokens(data.access_token, data.refresh_token);
+        setInfo('Signed in successfully.');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
       setLoading(false);
     }
@@ -109,8 +169,7 @@ export default function HomePage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
-      throw new Error(detail || `HTTP ${res.status}`);
+      throw new Error(parseApiError(data, `HTTP ${res.status}`));
     }
     return data;
   }
@@ -186,7 +245,7 @@ export default function HomePage() {
 
   return (
     <main>
-      <span className="badge">v0.6.0-alpha</span>
+      <span className="badge">v0.8.0-alpha</span>
       <h1>QuantumFintek</h1>
       <p>
         Enterprise quantitative finance console. API: <code>{API_URL}</code>
@@ -194,35 +253,112 @@ export default function HomePage() {
 
       {!token ? (
         <div className="card">
-          <strong>Sign in</strong>
-          <form className="form" onSubmit={login}>
+          <div className="row" style={{ marginBottom: '1rem', gap: '0.5rem' }}>
+            <button
+              type="button"
+              className={mode === 'login' ? '' : 'secondary'}
+              onClick={() => switchMode('login')}
+              disabled={loading}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              className={mode === 'register' ? '' : 'secondary'}
+              onClick={() => switchMode('register')}
+              disabled={loading}
+            >
+              Create account
+            </button>
+          </div>
+
+          <strong>{mode === 'login' ? 'Sign in' : 'Create account'}</strong>
+
+          <form className="form" onSubmit={handleSubmit}>
             <label>
               Email
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                autoComplete="email"
+                required
+                placeholder="you@company.com"
+              />
             </label>
-            <label>
-              Username <span className="hint">(register only)</span>
-              <input value={username} onChange={(e) => setUsername(e.target.value)} />
-            </label>
+
+            {mode === 'register' && (
+              <label>
+                Username
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  required
+                  minLength={2}
+                  placeholder="analyst"
+                />
+              </label>
+            )}
+
             <label>
               Password
               <input
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 type="password"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                 required
                 minLength={8}
+                placeholder="Min. 8 characters"
               />
             </label>
+
+            {mode === 'register' && (
+              <label>
+                Confirm password
+                <input
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  placeholder="Repeat password"
+                />
+              </label>
+            )}
+
             <div className="row">
               <button type="submit" disabled={loading}>
-                Login
-              </button>
-              <button type="button" className="secondary" onClick={register} disabled={loading}>
-                Register
+                {loading
+                  ? mode === 'login'
+                    ? 'Signing in…'
+                    : 'Creating account…'
+                  : mode === 'login'
+                    ? 'Sign in'
+                    : 'Create account'}
               </button>
             </div>
           </form>
+
+          <p className="hint" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>
+            {mode === 'login' ? (
+              <>
+                No account?{' '}
+                <button type="button" className="link" onClick={() => switchMode('register')}>
+                  Create one
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{' '}
+                <button type="button" className="link" onClick={() => switchMode('login')}>
+                  Sign in
+                </button>
+              </>
+            )}
+          </p>
         </div>
       ) : (
         <>
@@ -258,7 +394,10 @@ export default function HomePage() {
                   <div className="bar-row" key={i}>
                     <span className="bar-label">Asset {i + 1}</span>
                     <div className="bar-track">
-                      <div className="bar-fill" style={{ width: `${Math.max(0, Math.min(100, w * 100))}%` }} />
+                      <div
+                        className="bar-fill"
+                        style={{ width: `${Math.max(0, Math.min(100, w * 100))}%` }}
+                      />
                     </div>
                     <span className="bar-value">{(w * 100).toFixed(1)}%</span>
                   </div>
