@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from functools import lru_cache
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -11,23 +10,15 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import Settings, get_settings
 from app.core.redis import get_redis
 from app.identity.security import SessionStore, TokenPayload, TokenService
-from app.identity.security.jwt_keys import JWTKeyRing, build_key_ring
+from app.identity.security.jwt_keys import JWTKeyRing
+from app.identity.security.key_rotation import KeyRingManager, get_key_ring_manager
 
 bearer = HTTPBearer(auto_error=False)
 
 
-@lru_cache
 def get_key_ring() -> JWTKeyRing:
-    settings = get_settings()
-    return build_key_ring(
-        algorithm=settings.jwt_algorithm,
-        secret_key=settings.secret_key,
-        private_pem=settings.jwt_private_key_pem,
-        public_pem=settings.jwt_public_key_pem,
-        active_kid=settings.jwt_key_id,
-        previous_public_keys_json=settings.jwt_previous_public_keys_json,
-        app_env=settings.app_env,
-    )
+    """Return the live key ring (hot-swapped on rotation)."""
+    return get_key_ring_manager().ring
 
 
 async def get_token_service(
