@@ -24,36 +24,38 @@
 | `JWT_KEY_BITS` | RSA size (default 2048) |
 | `JWT_KID_PREFIX` | Generated kid prefix (default `qf-key`) |
 | `JWT_AUTO_BOOTSTRAP` | Non-prod: generate RSA if no PEM/store |
+| `JWT_JWKS_CACHE_MAX_AGE` | HTTP `Cache-Control max-age` for JWKS (default 300s) |
+| `JWT_JWKS_STALE_WHILE_REVALIDATE` | `stale-while-revalidate` (default 60s) |
 
 Production requires RS256 via **PEM or key store file**. HS* is rejected.
 
+### JWKS caching strategy
+
+`GET /auth/jwks.json` is the public key distribution endpoint for gateways and secondary verifiers.
+
+| Layer | Behavior |
+|-------|----------|
+| **In-process** | `KeyRingManager` caches the JWKS JSON + weak ETag after first build |
+| **Invalidation** | Any `rotate()` or init bumps `jwks_generation` and clears the cache |
+| **ETag** | `W/"jwks-{generation}-{sha256}"`; `If-None-Match` → **304** |
+| **Cache-Control** | `public, max-age=…, stale-while-revalidate=…, must-revalidate` |
+| **Debug headers** | `X-QF-JWKS-Generation`, `X-QF-JWKS-Active-Kid` |
+
+Guidance:
+
+- Set `max-age` **much lower** than `JWT_ROTATION_INTERVAL_SECONDS` (e.g. 300s vs 24h) so clients pick up new keys quickly after rotation.
+- Rely on **ETag** for cheap revalidation; clients should send `If-None-Match`.
+- Edge/CDN may cache JWKS; after admin rotate, wait for max-age or purge the path if you need instant global visibility.
+- QuantumFintek **API verification does not use JWKS HTTP** — it reads the live key ring in-process. JWKS is for external consumers.
+
 ### Automated rotation
 
-1. On startup, `KeyRingManager` loads:
-   - `JWT_KEY_STORE_PATH` if present, else
-   - env PEMs, else
-   - bootstrap RSA (non-prod only when `JWT_AUTO_BOOTSTRAP=true`)
-2. When `JWT_AUTO_ROTATE=true`, a background task calls `rotate()` every interval.
-3. Each rotation:
-   - Generates new RSA key + `kid`
-   - Signs new tokens with the new private key
-   - Keeps previous **public** keys (strips old private from memory/store)
-   - Prunes publics beyond `JWT_MAX_PREVIOUS_KEYS`
-   - Atomically rewrites the store file (`chmod 600`)
-4. Admin can force rotation: `POST /admin/jwt/rotate` (role `admin`)
-5. Status (no secrets): `GET /admin/jwt/keys`
-6. Public JWKS updates live: `GET /auth/jwks.json`
+1. On startup, `KeyRingManager` loads store / env PEMs / bootstrap.
+2. `JWT_AUTO_ROTATE=true` schedules `rotate()` on an interval.
+3. Each rotation promotes a new RSA key, keeps previous publics, prunes, persists, **invalidates JWKS cache**.
+4. Admin: `POST /admin/jwt/rotate`, `GET /admin/jwt/keys` (includes `jwks_generation` / `jwks_etag`).
 
-**Multi-instance:** each process needs the **same** store volume (or inject the same PEMs). Private keys are not published to Redis. Prefer a shared mounted secret volume or external KMS/Vault in enterprise deployments.
-
-### Manual rotation (still supported)
-
-```bash
-./scripts/gen_jwt_rs256_keys.sh qf-key-2
-# Set JWT_PREVIOUS_PUBLIC_KEYS_JSON + new JWT_KEY_ID / PEMs, restart
-```
-
-Or rely on auto-rotate / admin API when using the key store.
+**Multi-instance:** share the same key-store volume. Private keys never appear in JWKS.
 
 ### Sign / verify
 
@@ -64,8 +66,10 @@ Or rely on auto-rotate / admin API when using the key store.
 ### Implementation
 
 - `apps/api/app/identity/security/jwt_keys.py` — ring model
-- `apps/api/app/identity/security/key_rotation.py` — manager, scheduler, store
+- `apps/api/app/identity/security/key_rotation.py` — manager, scheduler, store, JWKS cache
+- `apps/api/app/identity/security/jwks_cache.py` — ETag helpers
 - `apps/api/app/identity/security/token_service.py` — encode/decode
+- `apps/api/app/api/routes/auth.py` — JWKS HTTP
 - `apps/api/app/api/routes/admin.py` — rotate / status
 
 ## Authorization
