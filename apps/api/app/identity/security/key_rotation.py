@@ -1,10 +1,10 @@
-"""Automated RS256 JWT key rotation.
+"""Automated RS256 JWT key rotation + JWKS cache.
 
 - Generates new RSA key pairs
 - Promotes active signing key (kid)
 - Retains previous *public* keys for verify overlap
-- Persists state to a local JSON store (private keys never leave the host/volume)
-- Optional background scheduler + admin-triggered rotate
+- Persists state to a local JSON store
+- Caches JWKS document; invalidates on rotation
 """
 
 from __future__ import annotations
@@ -14,11 +14,10 @@ import json
 import logging
 import os
 import threading
-import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
@@ -30,12 +29,12 @@ from app.identity.security.jwt_keys import (
     build_key_ring,
     _normalize_pem,
 )
+from app.identity.security.jwks_cache import CachedJWKS
 
 logger = logging.getLogger("quantum_fintek.jwt.rotation")
 
 
 def generate_rsa_keypair(bits: int = 2048) -> tuple[str, str]:
-    """Return (private_pem, public_pem) PKCS8 / SubjectPublicKeyInfo."""
     key = rsa.generate_private_key(
         public_exponent=65537, key_size=bits, backend=default_backend()
     )
@@ -52,7 +51,6 @@ def generate_rsa_keypair(bits: int = 2048) -> tuple[str, str]:
 
 
 def _new_kid(prefix: str = "qf-key") -> str:
-    # sortable unique id: prefix-YYYYmmddHHMMSS-hex
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     suffix = os.urandom(3).hex()
     return f"{prefix}-{ts}-{suffix}"
@@ -62,7 +60,6 @@ def _new_kid(prefix: str = "qf-key") -> str:
 class RotationState:
     algorithm: str = "RS256"
     active_kid: str = ""
-    # kid -> {private_pem?, public_pem, created_at, retired_at?}
     keys: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_rotated_at: str | None = None
     rotation_count: int = 0
@@ -85,7 +82,6 @@ class RotationState:
         )
 
     def public_snapshot(self) -> dict[str, Any]:
-        """Safe status for admin API (no private PEMs)."""
         return {
             "algorithm": self.algorithm,
             "active_kid": self.active_kid,
@@ -106,7 +102,7 @@ class RotationState:
 
 
 class KeyRingManager:
-    """Process-wide mutable JWT key ring with rotation."""
+    """Process-wide mutable JWT key ring with rotation and JWKS cache."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -118,6 +114,9 @@ class KeyRingManager:
         self._kid_prefix: str = "qf-key"
         self._scheduler_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
+        # JWKS cache
+        self._jwks_cache: CachedJWKS | None = None
+        self._jwks_generation: int = 0
 
     @property
     def ring(self) -> JWTKeyRing:
@@ -149,7 +148,6 @@ class KeyRingManager:
         kid_prefix: str = "qf-key",
         auto_bootstrap: bool = True,
     ) -> JWTKeyRing:
-        """Load store if present, else env PEMs, else bootstrap RSA (non-prod)."""
         self._max_previous = max(0, int(max_previous_keys))
         self._key_bits = int(key_bits)
         self._kid_prefix = kid_prefix or "qf-key"
@@ -161,6 +159,7 @@ class KeyRingManager:
             with self._lock:
                 self._state = state
                 self._ring = ring
+                self._invalidate_jwks_locked()
             logger.info(
                 "JWT key ring loaded from store path=%s active_kid=%s keys=%d",
                 self._store_path,
@@ -169,7 +168,6 @@ class KeyRingManager:
             )
             return ring
 
-        # Build from environment
         try:
             ring = build_key_ring(
                 algorithm=algorithm,
@@ -183,12 +181,12 @@ class KeyRingManager:
         except ValueError:
             if not auto_bootstrap or app_env.lower() in {"production", "prod"}:
                 raise
-            # Bootstrap a fresh RSA ring for local/staging convenience
             ring = self._bootstrap_rsa_ring()
             state = self._state_from_ring(ring)
             with self._lock:
                 self._state = state
                 self._ring = ring
+                self._invalidate_jwks_locked()
             if self._store_path:
                 self._save_store(self._store_path, state)
             logger.warning(
@@ -201,6 +199,7 @@ class KeyRingManager:
         with self._lock:
             self._state = state
             self._ring = ring
+            self._invalidate_jwks_locked()
         if self._store_path and ring.algorithm.startswith("RS"):
             self._store_path.parent.mkdir(parents=True, exist_ok=True)
             self._save_store(self._store_path, state)
@@ -230,8 +229,27 @@ class KeyRingManager:
             rotation_count=0,
         )
 
+    def _invalidate_jwks_locked(self) -> None:
+        self._jwks_generation += 1
+        self._jwks_cache = None
+
+    def get_jwks_cached(self) -> CachedJWKS:
+        """Return cached JWKS, rebuilding once after rotation/init."""
+        with self._lock:
+            if self._ring is None:
+                raise RuntimeError("KeyRingManager not initialized")
+            if self._jwks_cache is not None:
+                return self._jwks_cache
+            body = self._ring.jwks()
+            cached = CachedJWKS.build(
+                body=body,
+                generation=self._jwks_generation,
+                active_kid=self._ring.active_kid,
+            )
+            self._jwks_cache = cached
+            return cached
+
     def rotate(self, reason: str = "manual") -> dict[str, Any]:
-        """Generate a new active RSA key; demote previous to verify-only."""
         with self._lock:
             if self._ring is None or self._state is None:
                 raise RuntimeError("KeyRingManager not initialized")
@@ -243,10 +261,8 @@ class KeyRingManager:
             priv, pub = generate_rsa_keypair(self._key_bits)
             now = datetime.now(timezone.utc).isoformat()
 
-            # Retire old active: drop private from memory after promote (keep public)
             if old_kid in self._state.keys:
                 self._state.keys[old_kid]["retired_at"] = now
-                # Keep private briefly only if needed; prefer strip private for retired
                 self._state.keys[old_kid]["private_pem"] = None
 
             self._state.keys[new_kid] = {
@@ -259,34 +275,32 @@ class KeyRingManager:
             self._state.last_rotated_at = now
             self._state.rotation_count += 1
 
-            # Prune oldest retired publics beyond max_previous
             self._prune_previous_locked()
-
             self._ring = self._state.to_key_ring()
+            self._invalidate_jwks_locked()
+
             if self._store_path:
                 self._save_store(self._store_path, self._state)
 
             snapshot = self._state.public_snapshot()
             snapshot["reason"] = reason
             snapshot["previous_active_kid"] = old_kid
+            snapshot["jwks_generation"] = self._jwks_generation
             logger.info(
-                "JWT key rotated reason=%s old_kid=%s new_kid=%s retained=%d",
+                "JWT key rotated reason=%s old_kid=%s new_kid=%s retained=%d jwks_gen=%d",
                 reason,
                 old_kid,
                 new_kid,
                 len(self._state.keys),
+                self._jwks_generation,
             )
             return snapshot
 
     def _prune_previous_locked(self) -> None:
         assert self._state is not None
         active = self._state.active_kid
-        retired = [
-            (kid, meta)
-            for kid, meta in self._state.keys.items()
-            if kid != active
-        ]
-        # Sort by retired_at / created_at ascending (oldest first)
+        retired = [(kid, meta) for kid, meta in self._state.keys.items() if kid != active]
+
         def sort_key(item: tuple[str, dict[str, Any]]) -> str:
             meta = item[1]
             return str(meta.get("retired_at") or meta.get("created_at") or "")
@@ -306,12 +320,15 @@ class KeyRingManager:
             data["initialized"] = True
             data["store_path"] = str(self._store_path) if self._store_path else None
             data["max_previous_keys"] = self._max_previous
+            data["jwks_generation"] = self._jwks_generation
+            data["jwks_cached"] = self._jwks_cache is not None
+            if self._jwks_cache is not None:
+                data["jwks_etag"] = self._jwks_cache.etag
             return data
 
     def _load_store(self, path: Path) -> RotationState:
         raw = json.loads(path.read_text(encoding="utf-8"))
         keys = raw.get("keys") or {}
-        # Normalize PEMs
         for kid, meta in keys.items():
             if meta.get("private_pem"):
                 meta["private_pem"] = _normalize_pem(meta["private_pem"])
@@ -344,7 +361,6 @@ class KeyRingManager:
             pass
 
     async def start_scheduler(self, interval_seconds: int) -> None:
-        """Background rotation loop. interval_seconds <= 0 disables."""
         if interval_seconds <= 0:
             logger.info("JWT auto-rotation scheduler disabled")
             return
@@ -358,7 +374,7 @@ class KeyRingManager:
             while not self._stop_event.is_set():
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=interval_seconds)
-                    break  # stop requested
+                    break
                 except asyncio.TimeoutError:
                     pass
                 try:
@@ -380,7 +396,6 @@ class KeyRingManager:
         logger.info("JWT auto-rotation scheduler stopped")
 
 
-# Process singleton
 _manager = KeyRingManager()
 
 
