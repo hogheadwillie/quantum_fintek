@@ -10,14 +10,34 @@ from app.core.config import get_settings
 from app.core.logging import StructuredLoggingMiddleware, setup_logging
 from app.core.redis import close_redis
 from app.db.session import init_db
+from app.identity.security.key_rotation import get_key_ring_manager
 from app.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     setup_logging()
+    settings = get_settings()
+    mgr = get_key_ring_manager()
+    mgr.initialize_from_settings(
+        algorithm=settings.jwt_algorithm,
+        secret_key=settings.secret_key,
+        private_pem=settings.jwt_private_key_pem,
+        public_pem=settings.jwt_public_key_pem,
+        active_kid=settings.jwt_key_id,
+        previous_public_keys_json=settings.jwt_previous_public_keys_json,
+        app_env=settings.app_env,
+        store_path=settings.jwt_key_store_path,
+        max_previous_keys=settings.jwt_max_previous_keys,
+        key_bits=settings.jwt_key_bits,
+        kid_prefix=settings.jwt_kid_prefix,
+        auto_bootstrap=settings.jwt_auto_bootstrap,
+    )
     await init_db()
+    if settings.jwt_auto_rotate:
+        await mgr.start_scheduler(settings.jwt_rotation_interval_seconds)
     yield
+    await mgr.stop_scheduler()
     await close_redis()
 
 
@@ -26,7 +46,7 @@ settings = get_settings()
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.9.0",
+    version="0.9.1",
     lifespan=lifespan,
 )
 
@@ -60,41 +80,22 @@ app.add_middleware(StructuredLoggingMiddleware)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.9.0"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.9.1"}
 
 
 @app.get("/")
 def root():
     return {
         "name": "QuantumFintek",
-        "version": "0.9.0",
+        "version": "0.9.1",
         "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security", "compliance"],
         "endpoints": {
             "register": "/auth/register",
             "login": "/auth/login",
+            "jwks": "/auth/jwks.json",
             "me": "/auth/me",
-            "quant_optimize": "/quant/optimize",
-            "quant_risk": "/quant/risk",
-            "quant_backtest": "/quant/backtest",
-            "quant_factor": "/quant/factor",
-            "ai_anomaly": "/ai/anomaly",
-            "ai_sentiment": "/ai/sentiment",
-            "admin_audit": "/admin/audit",
-            "admin_users": "/admin/users",
-            "compliance_evidence": "/compliance/evidence",
-            "compliance_zos": "/compliance/zos",
-            "compliance_zos_audit": "/compliance/zos/audit",
-            "notifications": "/notifications",
-            "trading_orders": "/trading/orders",
-            "trading_positions": "/trading/positions",
-            "trading_market_data": "/trading/market-data",
-            "orgs": "/orgs",
-            "zos_health": "/zos/health",
-            "zos_lpars": "/zos/lpars",
-            "zos_jobs": "/zos/jobs",
-            "zos_datasets": "/zos/datasets",
-            "zos_transcode": "/zos/transcode",
-            "zos_mqbridge": "/zos/mqbridge",
+            "admin_jwt_keys": "/admin/jwt/keys",
+            "admin_jwt_rotate": "/admin/jwt/rotate",
             "docs": "/docs",
         },
     }

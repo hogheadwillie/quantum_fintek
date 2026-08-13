@@ -1,19 +1,22 @@
-"""Admin-only routes: audit log, user management."""
+"""Admin-only routes: audit log, user management, JWT rotation."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_roles
+from app.core.audit import log_event
 from app.db.models import AuditEvent, User
 from app.db.session import get_db
 from app.identity.security import TokenPayload
+from app.identity.security.key_rotation import get_key_ring_manager
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -50,6 +53,11 @@ class UserListResponse(BaseModel):
     total: int
 
 
+class JwtRotateResponse(BaseModel):
+    detail: str
+    status: dict[str, Any]
+
+
 @router.get("/audit", response_model=AuditListResponse)
 async def list_audit_events(
     page: int = Query(1, ge=1),
@@ -69,14 +77,12 @@ async def list_audit_events(
             actor_uuid = uuid.UUID(actor_id)
             stmt = stmt.where(AuditEvent.actor_id == actor_uuid)
         except ValueError:
-            pass  # ignore malformed UUIDs
+            pass
 
-    # Count total
     count_stmt = stmt.with_only_columns(AuditEvent.id)
     total_result = await db.scalars(count_stmt)
     total = len(total_result.all())
 
-    # Paginate
     offset = (page - 1) * page_size
     stmt = stmt.offset(offset).limit(page_size)
     rows = (await db.scalars(stmt)).all()
@@ -121,3 +127,36 @@ async def list_users(
         for u in rows
     ]
     return UserListResponse(users=users, total=total)
+
+
+@router.get("/jwt/keys")
+async def jwt_key_status(_user: TokenPayload = Admin) -> dict[str, Any]:
+    """Public metadata about the JWT key ring (no private PEMs)."""
+    return get_key_ring_manager().status()
+
+
+@router.post("/jwt/rotate", response_model=JwtRotateResponse)
+async def jwt_rotate_now(
+    _user: TokenPayload = Admin,
+    db: AsyncSession = Depends(get_db),
+) -> JwtRotateResponse:
+    """Force an RS256 key rotation (admin only)."""
+    mgr = get_key_ring_manager()
+    try:
+        snapshot = mgr.rotate(reason="admin")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    await log_event(
+        db,
+        action="security.jwt.rotate",
+        actor_id=_user.sub,
+        resource="jwt:keyring",
+        detail=(
+            f"previous={snapshot.get('previous_active_kid')} "
+            f"active={snapshot.get('active_kid')} count={snapshot.get('rotation_count')}"
+        ),
+    )
+    return JwtRotateResponse(detail="JWT signing key rotated", status=snapshot)
