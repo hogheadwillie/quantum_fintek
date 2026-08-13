@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -10,8 +11,23 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import Settings, get_settings
 from app.core.redis import get_redis
 from app.identity.security import SessionStore, TokenPayload, TokenService
+from app.identity.security.jwt_keys import JWTKeyRing, build_key_ring
 
 bearer = HTTPBearer(auto_error=False)
+
+
+@lru_cache
+def get_key_ring() -> JWTKeyRing:
+    settings = get_settings()
+    return build_key_ring(
+        algorithm=settings.jwt_algorithm,
+        secret_key=settings.secret_key,
+        private_pem=settings.jwt_private_key_pem,
+        public_pem=settings.jwt_public_key_pem,
+        active_kid=settings.jwt_key_id,
+        previous_public_keys_json=settings.jwt_previous_public_keys_json,
+        app_env=settings.app_env,
+    )
 
 
 async def get_token_service(
@@ -20,8 +36,7 @@ async def get_token_service(
     redis_client = await get_redis()
     store = SessionStore(redis_client, prefix=settings.redis_key_prefix)
     return TokenService(
-        secret_key=settings.secret_key,
-        algorithm=settings.jwt_algorithm,
+        key_ring=get_key_ring(),
         access_token_expire_minutes=settings.access_token_expire_minutes,
         refresh_token_expire_days=settings.refresh_token_expire_days,
         session_store=store,

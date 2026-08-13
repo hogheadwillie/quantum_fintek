@@ -1,4 +1,4 @@
-"""JWT Token Service with Redis session / denylist integration."""
+"""JWT Token Service with Redis session / denylist and RS256 key rotation."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import uuid
 
-from jose import jwt, JWTError
+from jose import jwt, JWTError, jwk
 from pydantic import BaseModel
 
+from app.identity.security.jwt_keys import JWTKeyRing
 from app.identity.security.session_store import SessionStore
 
 
@@ -20,24 +21,39 @@ class TokenPayload(BaseModel):
     type: str  # "access" | "refresh"
     org_id: Optional[str] = None
     roles: list[str] = []
+    kid: Optional[str] = None
 
 
 class TokenService:
-    """Authentication token service."""
+    """Authentication token service (RS256 preferred; HS256 dev fallback)."""
 
     def __init__(
         self,
-        secret_key: str,
-        algorithm: str = "HS256",
+        key_ring: JWTKeyRing,
         access_token_expire_minutes: int = 30,
         refresh_token_expire_days: int = 14,
         session_store: Optional[SessionStore] = None,
+        *,
+        # Back-compat kwargs (ignored if key_ring provided via deps)
+        secret_key: str | None = None,
+        algorithm: str | None = None,
     ) -> None:
-        self.secret_key = secret_key
-        self.algorithm = algorithm
+        if key_ring is None and secret_key:
+            from app.identity.security.jwt_keys import build_key_ring
+
+            key_ring = build_key_ring(
+                algorithm=algorithm or "HS256",
+                secret_key=secret_key,
+                app_env="development",
+            )
+        self.key_ring = key_ring
         self.access_token_expire_minutes = access_token_expire_minutes
         self.refresh_token_expire_days = refresh_token_expire_days
         self.session_store = session_store
+
+    @property
+    def algorithm(self) -> str:
+        return self.key_ring.algorithm
 
     @staticmethod
     def _seconds_until(exp: datetime) -> int:
@@ -45,6 +61,46 @@ class TokenService:
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
         return max(int((exp - now).total_seconds()), 1)
+
+    def _encode(self, payload: dict[str, Any]) -> str:
+        active = self.key_ring.get_active()
+        headers = {"kid": active.kid, "typ": "JWT"}
+        return jwt.encode(
+            payload,
+            active.signing_key(),
+            algorithm=active.algorithm,
+            headers=headers,
+        )
+
+    def _decode_raw(self, token: str) -> dict[str, Any]:
+        try:
+            header = jwt.get_unverified_header(token)
+        except JWTError as exc:
+            raise ValueError("Invalid token header") from exc
+
+        alg = header.get("alg")
+        allowed = self.key_ring.allowed_algorithms()
+        if alg not in allowed:
+            raise ValueError(f"Disallowed JWT alg: {alg}")
+
+        kid = header.get("kid")
+        try:
+            material = self.key_ring.get_for_verify(kid)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        try:
+            data = jwt.decode(
+                token,
+                material.verify_key(),
+                algorithms=allowed,
+                options={"verify_aud": False},
+            )
+        except JWTError as exc:
+            raise ValueError("Invalid or expired token") from exc
+
+        data["_kid"] = kid or material.kid
+        return data
 
     def create_access_token(
         self,
@@ -55,7 +111,7 @@ class TokenService:
     ) -> str:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(minutes=self.access_token_expire_minutes)
-        payload = {
+        payload: dict[str, Any] = {
             "sub": subject,
             "exp": expire,
             "iat": now,
@@ -66,7 +122,7 @@ class TokenService:
         }
         if extra_claims:
             payload.update(extra_claims)
-        return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+        return self._encode(payload)
 
     async def create_refresh_token(
         self,
@@ -86,18 +142,18 @@ class TokenService:
             "roles": roles or [],
             "org_id": org_id,
         }
-        token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+        token = self._encode(payload)
         if self.session_store:
             ttl = self._seconds_until(expire)
             await self.session_store.store_refresh(jti, subject, ttl, roles=roles or [])
         return token
 
     def decode_token(self, token: str) -> TokenPayload:
-        try:
-            data = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            return TokenPayload(**data)
-        except JWTError as exc:
-            raise ValueError("Invalid or expired token") from exc
+        data = self._decode_raw(token)
+        kid = data.pop("_kid", None)
+        payload = TokenPayload(**data)
+        payload.kid = kid
+        return payload
 
     async def validate_access_token(self, token: str) -> TokenPayload:
         payload = self.decode_token(token)
@@ -134,7 +190,6 @@ class TokenService:
                     )
                     refresh_revoked = True
             except ValueError:
-                # Expired/invalid refresh still counts as logged out client-side
                 refresh_revoked = False
         return {
             "access_jti_denied": access_payload.jti,
@@ -169,7 +224,6 @@ class TokenService:
             record = await self.session_store.get_refresh_record(payload.jti)
             if not record or str(record.get("sub")) != payload.sub:
                 raise ValueError("Refresh token revoked or unknown")
-            # Prefer roles from Redis record if JWT omitted them
             stored_roles = record.get("roles") or []
             if not roles and isinstance(stored_roles, list):
                 roles = [str(r) for r in stored_roles]
@@ -182,3 +236,6 @@ class TokenService:
     def is_access_token(self, token: str) -> bool:
         payload = self.decode_token(token)
         return payload.type == "access"
+
+    def jwks(self) -> dict[str, Any]:
+        return self.key_ring.jwks()
