@@ -1,8 +1,9 @@
-"""Authentication routes: register, login, refresh, logout, me, verify."""
+"""Authentication routes: register, login, refresh, logout, me, verify, jwks."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -66,6 +67,12 @@ class TokenRequest(BaseModel):
     subject: str = Field(..., min_length=1)
     org_id: str | None = None
     roles: list[str] = []
+
+
+@router.get("/jwks.json")
+async def jwks(tokens: TokenService = Depends(get_token_service)) -> dict[str, Any]:
+    """Public JSON Web Key Set for RS256 verification (no private material)."""
+    return tokens.jwks()
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
