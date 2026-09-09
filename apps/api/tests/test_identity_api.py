@@ -183,6 +183,77 @@ def test_member_cannot_list_organization_users(identity_api: IdentityApi) -> Non
     assert response.json()["detail"] == "Organization administrator role required"
 
 
+def test_admin_can_provision_normalized_tenant_user(identity_api: IdentityApi) -> None:
+    token = login(identity_api).json()["access_token"]
+
+    response = identity_api.client.post(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "email": " NEW.USER@Example.COM ",
+            "password": "a strong password for tests",
+            "role": "member",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["organization_id"] == str(identity_api.organization_id)
+    assert response.json()["email"] == "new.user@example.com"
+    assert response.json()["role"] == "member"
+    assert response.json()["is_active"] is True
+    assert "password_hash" not in response.json()
+
+    provisioned_login = login(
+        identity_api,
+        email="new.user@example.com",
+        password="a strong password for tests",
+    )
+    assert provisioned_login.status_code == 200
+
+
+def test_admin_cannot_provision_duplicate_tenant_email(identity_api: IdentityApi) -> None:
+    token = login(identity_api).json()["access_token"]
+
+    response = identity_api.client.post(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "email": " MEMBER@EXAMPLE.COM ",
+            "password": "a strong password for tests",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "User email already exists in organization"
+
+
+def test_member_cannot_provision_user(identity_api: IdentityApi) -> None:
+    token = login(identity_api, email="member@example.com").json()["access_token"]
+
+    response = identity_api.client.post(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "email": "blocked@example.com",
+            "password": "a strong password for tests",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_user_provisioning_rejects_short_password(identity_api: IdentityApi) -> None:
+    token = login(identity_api).json()["access_token"]
+
+    response = identity_api.client.post(
+        "/api/v1/identity/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"email": "new@example.com", "password": "too-short"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_current_user_rejects_invalid_token(identity_api: IdentityApi) -> None:
     response = identity_api.client.get(
         "/api/v1/identity/me",
