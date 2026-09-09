@@ -8,7 +8,8 @@ from app.config import Settings
 from app.database import get_session
 from app.identity.models import ROLE_ADMIN, User
 from app.identity.repository import TenantScopedUserRepository
-from app.identity.schemas import LoginRequest, TokenResponse, UserResponse
+from app.identity.schemas import LoginRequest, TokenResponse, UserProvisionRequest, UserResponse
+from app.identity.security import hash_password
 from app.identity.service import AuthenticationError, AuthenticationService
 
 
@@ -83,6 +84,30 @@ def create_identity_router(settings: Settings) -> APIRouter:
     ) -> list[User]:
         return TenantScopedUserRepository(session).list_for_organization(
             administrator.organization_id
+        )
+
+    @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+    def provision_user(
+        request: UserProvisionRequest,
+        administrator: Annotated[User, Depends(get_organization_admin)],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> User:
+        users = TenantScopedUserRepository(session)
+        if users.get_by_organization_email(
+            organization_id=administrator.organization_id,
+            email=request.email,
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="User email already exists in organization",
+            )
+
+        return users.create_for_organization(
+            organization_id=administrator.organization_id,
+            email=request.email,
+            password_hash=hash_password(request.password),
+            role=request.role,
+            is_active=request.is_active,
         )
 
     return router
