@@ -1,6 +1,7 @@
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.identity.normalization import normalize_email as normalize_email_value
 
@@ -19,6 +20,18 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class UserProvisionRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=12, max_length=128)
+    role: Literal["member", "admin"] = "member"
+    is_active: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, email: str) -> str:
+        return normalize_email_value(email)
 
 
 class UserResponse(BaseModel):
