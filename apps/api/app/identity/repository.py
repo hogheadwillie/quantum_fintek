@@ -8,7 +8,7 @@ from app.identity.normalization import normalize_email
 
 
 class TenantScopedUserRepository:
-    """Repository for user lookups constrained by tenant identity."""
+    """Repository for user operations constrained by tenant identity."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -30,6 +30,14 @@ class TenantScopedUserRepository:
         )
         return self._session.scalar(statement)
 
+    def get_by_organization_email(self, *, organization_id: UUID, email: str) -> User | None:
+        """Return a user by normalized email within one organization."""
+        statement = select(User).where(
+            User.organization_id == organization_id,
+            User.email == normalize_email(email),
+        )
+        return self._session.scalar(statement)
+
     def get_by_id(self, user_id: str | UUID) -> User | None:
         """Return a user by UUID string, or None for an invalid identifier."""
         try:
@@ -46,6 +54,28 @@ class TenantScopedUserRepository:
             .order_by(User.email)
         )
         return list(self._session.scalars(statement))
+
+    def create_for_organization(
+        self,
+        *,
+        organization_id: UUID,
+        email: str,
+        password_hash: str,
+        role: str,
+        is_active: bool = True,
+    ) -> User:
+        """Create and persist a user inside one organization boundary."""
+        user = User(
+            organization_id=organization_id,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            is_active=is_active,
+        )
+        self._session.add(user)
+        self._session.commit()
+        self._session.refresh(user)
+        return user
 
 
 def get_user_by_identity(
