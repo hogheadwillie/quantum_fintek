@@ -80,5 +80,5 @@ def decode_token(
         token,
         key,
         algorithms=[config.algorithm],
-        options=options or {},
+        options=options or {},  # type: ignore[arg-type]
     )
