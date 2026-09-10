@@ -12,7 +12,7 @@ class AnomalyDetector:
 
     def __init__(self, contamination: float = 0.05, random_state: int = 42) -> None:
         self.model = IsolationForest(
-            contamination=contamination,
+            contamination=contamination,  # type: ignore[arg-type]
             random_state=random_state,
             n_estimators=200,
         )
