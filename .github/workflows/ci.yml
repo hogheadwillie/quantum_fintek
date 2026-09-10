@@ -21,7 +21,7 @@ jobs:
           pip install -e packages/ai-intel
           pip install -e "packages/security[dev]"
           pip install -e "packages/zos-bridge[dev]"
-          pip install pytest numpy scikit-learn scipy
+          pip install pytest numpy scikit-learn scipy sqlalchemy fakeredis
       - name: Unit tests
         run: pytest -q tests/ packages/security/tests/ packages/zos-bridge/tests/
 
