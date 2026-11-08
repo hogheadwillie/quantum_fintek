@@ -1,41 +1,38 @@
 """Redis-backed refresh-token store and access-token denylist.
 
-Cluster-safe key design uses Redis hash tags so multi-key operations for a
-single subject land in the same hash slot:
-
-  Denylist (sharded by JTI):
-    {prefix}:deny:{{jti}}              -> "1"
-
-  Refresh (sharded by subject):
-    {prefix}:{{sub}}:rt:{jti}          -> JSON {sub, roles}
-    {prefix}:{{sub}}:rts               -> SET of JTIs
-
-  Reverse index (lookup subject from JTI; single-key):
-    {prefix}:rtidx:{jti}               -> subject
+Cluster-safe keys use hash tags. Denylist checks honor fail-closed semantics
+when ``fail_closed`` is True (Redis errors → treat as denied / raise).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional, Union
 
 import redis.asyncio as redis
 from redis.asyncio.cluster import RedisCluster
+from redis.exceptions import RedisError
 
 RedisClient = Union[redis.Redis, RedisCluster]
+logger = logging.getLogger("quantum_fintek.session_store")
 
 
 class SessionStore:
     """Tracks active refresh JTIs and revoked access JTIs."""
 
-    def __init__(self, client: RedisClient, prefix: str = "qf") -> None:
+    def __init__(
+        self,
+        client: RedisClient,
+        prefix: str = "qf",
+        *,
+        fail_closed: bool = True,
+    ) -> None:
         self.client = client
         self.prefix = prefix
-
-    # --- key builders (hash tags for cluster) ---
+        self.fail_closed = fail_closed
 
     def _deny_key(self, jti: str) -> str:
-        # Shard denylist entries across slots by JTI
         return f"{self.prefix}:deny:{{{jti}}}"
 
     def _refresh_key(self, subject: str, jti: str) -> str:
@@ -46,8 +43,6 @@ class SessionStore:
 
     def _rtidx_key(self, jti: str) -> str:
         return f"{self.prefix}:rtidx:{jti}"
-
-    # --- refresh tokens ---
 
     async def store_refresh(
         self,
@@ -61,90 +56,130 @@ class SessionStore:
         rt_key = self._refresh_key(subject, jti)
         set_key = self._user_refresh_key(subject)
         idx_key = self._rtidx_key(jti)
-
-        # Same-slot keys (subject-tagged) can be pipelined; index is separate.
-        pipe = self.client.pipeline(transaction=False)
-        pipe.setex(rt_key, ttl, payload)
-        pipe.sadd(set_key, jti)
-        pipe.expire(set_key, ttl)
-        await pipe.execute()
-        await self.client.setex(idx_key, ttl, subject)
+        try:
+            pipe = self.client.pipeline(transaction=False)
+            pipe.setex(rt_key, ttl, payload)
+            pipe.sadd(set_key, jti)
+            pipe.expire(set_key, ttl)
+            await pipe.execute()
+            await self.client.setex(idx_key, ttl, subject)
+        except RedisError:
+            logger.exception("store_refresh failed")
+            if self.fail_closed:
+                raise
 
     async def get_refresh_record(self, jti: str) -> Optional[dict[str, Any]]:
-        subject = await self.client.get(self._rtidx_key(jti))
-        if not subject:
-            # Legacy fallback: old key shape qf:refresh:{jti}
-            legacy = await self.client.get(f"{self.prefix}:refresh:{jti}")
-            if not legacy:
-                return None
+        try:
+            subject = await self.client.get(self._rtidx_key(jti))
+            if not subject:
+                legacy = await self.client.get(f"{self.prefix}:refresh:{jti}")
+                if not legacy:
+                    return None
+                try:
+                    data = json.loads(legacy)
+                    if isinstance(data, dict) and "sub" in data:
+                        return data
+                except json.JSONDecodeError:
+                    return {"sub": str(legacy), "roles": []}
+                return {"sub": str(legacy), "roles": []}
+
+            raw = await self.client.get(self._refresh_key(str(subject), jti))
+            if not raw:
+                return {"sub": str(subject), "roles": []}
             try:
-                data = json.loads(legacy)
+                data = json.loads(raw)
                 if isinstance(data, dict) and "sub" in data:
                     return data
             except json.JSONDecodeError:
-                return {"sub": str(legacy), "roles": []}
-            return {"sub": str(legacy), "roles": []}
-
-        raw = await self.client.get(self._refresh_key(str(subject), jti))
-        if not raw:
+                pass
             return {"sub": str(subject), "roles": []}
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict) and "sub" in data:
-                return data
-        except json.JSONDecodeError:
-            pass
-        return {"sub": str(subject), "roles": []}
+        except RedisError:
+            logger.exception("get_refresh_record failed jti=%s", jti)
+            if self.fail_closed:
+                raise
+            return None
 
     async def get_refresh_subject(self, jti: str) -> Optional[str]:
         record = await self.get_refresh_record(jti)
         return None if record is None else str(record.get("sub"))
 
     async def revoke_refresh(self, jti: str, subject: Optional[str] = None) -> None:
-        if subject is None:
-            subject = await self.client.get(self._rtidx_key(jti))
-            if subject is not None:
-                subject = str(subject)
-        if subject:
-            pipe = self.client.pipeline(transaction=False)
-            pipe.delete(self._refresh_key(subject, jti))
-            pipe.srem(self._user_refresh_key(subject), jti)
-            await pipe.execute()
-        await self.client.delete(self._rtidx_key(jti))
-        # Legacy cleanup
-        await self.client.delete(f"{self.prefix}:refresh:{jti}")
+        try:
+            if subject is None:
+                subject = await self.client.get(self._rtidx_key(jti))
+                if subject is not None:
+                    subject = str(subject)
+            if subject:
+                pipe = self.client.pipeline(transaction=False)
+                pipe.delete(self._refresh_key(subject, jti))
+                pipe.srem(self._user_refresh_key(subject), jti)
+                await pipe.execute()
+            await self.client.delete(self._rtidx_key(jti))
+            await self.client.delete(f"{self.prefix}:refresh:{jti}")
+        except RedisError:
+            logger.exception("revoke_refresh failed")
+            if self.fail_closed:
+                raise
 
     async def list_refresh_jtis(self, subject: str) -> list[str]:
-        members = await self.client.smembers(self._user_refresh_key(subject))
-        return sorted(str(m) for m in members)
+        try:
+            members = await self.client.smembers(self._user_refresh_key(subject))
+            return sorted(str(m) for m in members)
+        except RedisError:
+            logger.exception("list_refresh_jtis failed")
+            if self.fail_closed:
+                raise
+            return []
 
     async def revoke_all_refresh_for_subject(self, subject: str) -> int:
-        """Delete all refresh tokens for a subject. Returns count removed."""
         jtis = await self.list_refresh_jtis(subject)
         if not jtis:
-            await self.client.delete(self._user_refresh_key(subject))
+            try:
+                await self.client.delete(self._user_refresh_key(subject))
+            except RedisError:
+                if self.fail_closed:
+                    raise
+            return 0
+        try:
+            pipe = self.client.pipeline(transaction=False)
+            for jti in jtis:
+                pipe.delete(self._refresh_key(subject, jti))
+            pipe.delete(self._user_refresh_key(subject))
+            await pipe.execute()
+            for jti in jtis:
+                await self.client.delete(self._rtidx_key(jti))
+            return len(jtis)
+        except RedisError:
+            logger.exception("revoke_all_refresh_for_subject failed")
+            if self.fail_closed:
+                raise
             return 0
 
-        # Subject-tagged keys share a slot — safe to pipeline.
-        pipe = self.client.pipeline(transaction=False)
-        for jti in jtis:
-            pipe.delete(self._refresh_key(subject, jti))
-        pipe.delete(self._user_refresh_key(subject))
-        await pipe.execute()
-
-        # Index keys are on other slots — delete individually / small batches.
-        for jti in jtis:
-            await self.client.delete(self._rtidx_key(jti))
-        return len(jtis)
-
-    # --- access denylist (sharded by JTI) ---
-
     async def deny_access(self, jti: str, ttl_seconds: int) -> None:
-        """Put an access-token JTI on the denylist until it would have expired."""
-        await self.client.setex(self._deny_key(jti), max(int(ttl_seconds), 1), "1")
+        try:
+            await self.client.setex(self._deny_key(jti), max(int(ttl_seconds), 1), "1")
+        except RedisError:
+            logger.exception("deny_access failed")
+            if self.fail_closed:
+                raise
 
     async def is_denied(self, jti: str) -> bool:
-        return bool(await self.client.exists(self._deny_key(jti)))
+        """Return True if JTI is denylisted.
+
+        On Redis failure: raise if fail_closed else return False (fail-open).
+        """
+        try:
+            return bool(await self.client.exists(self._deny_key(jti)))
+        except RedisError as exc:
+            logger.exception("is_denied Redis error jti=%s", jti)
+            if self.fail_closed:
+                raise RuntimeError("Session store unavailable") from exc
+            return False
 
     async def deny_ttl_remaining(self, jti: str) -> int:
-        return int(await self.client.ttl(self._deny_key(jti)))
+        try:
+            return int(await self.client.ttl(self._deny_key(jti)))
+        except RedisError:
+            if self.fail_closed:
+                raise
+            return -2

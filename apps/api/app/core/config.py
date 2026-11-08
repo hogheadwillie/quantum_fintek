@@ -14,26 +14,28 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://quantum:quantum@localhost:5432/quantum_fintek"
 
     redis_url: str = "redis://localhost:6379/0"
+    redis_password: str = Field(default="", description="Optional; merged into client if URL has no password")
     redis_mode: str = Field(default="standalone", description="standalone | cluster")
     redis_cluster_nodes: str = Field(default="", description="Comma-separated host:port list when redis_mode=cluster")
     redis_key_prefix: str = "qf"
+    redis_ssl: bool = Field(default=False, description="Enable TLS to Redis (production)")
+    redis_ssl_cert_reqs: str = Field(default="required", description="none | optional | required")
 
     redis_socket_connect_timeout: float = Field(default=2.0)
     redis_socket_timeout: float = Field(default=5.0)
     redis_cluster_error_retry_attempts: int = Field(default=5)
 
+    # When Redis is unreachable during denylist check: True = reject token (safe)
+    auth_fail_closed: bool = Field(
+        default=True,
+        description="If True, Redis errors during denylist/session checks deny the request",
+    )
+
     cors_origins: str = (
         "http://localhost:3000,http://app.localhost,http://api.localhost,http://localhost"
     )
-    # Explicit methods/headers (avoid * in production-facing stacks)
-    cors_allow_methods: str = Field(
-        default="GET,POST,PUT,PATCH,DELETE,OPTIONS",
-        description="Comma-separated CORS methods",
-    )
-    cors_allow_headers: str = Field(
-        default="Authorization,Content-Type,Accept,X-Request-Id",
-        description="Comma-separated CORS request headers",
-    )
+    cors_allow_methods: str = Field(default="GET,POST,PUT,PATCH,DELETE,OPTIONS")
+    cors_allow_headers: str = Field(default="Authorization,Content-Type,Accept,X-Request-Id")
 
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
@@ -55,18 +57,12 @@ class Settings(BaseSettings):
     jwt_jwks_cache_max_age: int = Field(default=300)
     jwt_jwks_stale_while_revalidate: int = Field(default=60)
 
-    # OpenAPI / docs exposure
-    enable_openapi: bool | None = Field(
-        default=None,
-        description="If None: enabled only when app_env is not production/prod",
-    )
-
-    # Security headers
-    enable_hsts: bool = Field(
-        default=False,
-        description="Send Strict-Transport-Security (enable only behind HTTPS)",
-    )
+    enable_openapi: bool | None = Field(default=None)
+    enable_hsts: bool = Field(default=False)
     hsts_max_age: int = Field(default=31536000)
+
+    # WebSocket auth re-check interval (seconds)
+    ws_auth_recheck_seconds: int = Field(default=30)
 
     rate_limit_trading: int = 60
     rate_limit_global: int = 600
@@ -123,6 +119,9 @@ class Settings(BaseSettings):
                 )
             if self.secret_key.startswith("change-me"):
                 raise ValueError("secret_key must be changed in production")
+            if not (self.redis_password or "").strip() and "@" not in (self.redis_url or ""):
+                # Soft warning path: still allow but prefer password
+                pass
         return self
 
 

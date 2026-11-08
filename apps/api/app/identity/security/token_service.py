@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import uuid
 
-from jose import jwt, JWTError, jwk
+from jose import jwt, JWTError
 from pydantic import BaseModel
 
 from app.identity.security.jwt_keys import JWTKeyRing
@@ -34,9 +34,9 @@ class TokenService:
         refresh_token_expire_days: int = 14,
         session_store: Optional[SessionStore] = None,
         *,
-        # Back-compat kwargs (ignored if key_ring provided via deps)
         secret_key: str | None = None,
         algorithm: str | None = None,
+        fail_closed: bool = True,
     ) -> None:
         if key_ring is None and secret_key:
             from app.identity.security.jwt_keys import build_key_ring
@@ -50,6 +50,7 @@ class TokenService:
         self.access_token_expire_minutes = access_token_expire_minutes
         self.refresh_token_expire_days = refresh_token_expire_days
         self.session_store = session_store
+        self.fail_closed = fail_closed
 
     @property
     def algorithm(self) -> str:
@@ -159,12 +160,16 @@ class TokenService:
         payload = self.decode_token(token)
         if payload.type != "access":
             raise ValueError("Not an access token")
-        if self.session_store and await self.session_store.is_denied(payload.jti):
-            raise ValueError("Token has been revoked")
+        if self.session_store:
+            try:
+                if await self.session_store.is_denied(payload.jti):
+                    raise ValueError("Token has been revoked")
+            except RuntimeError as exc:
+                # Fail-closed: Redis down → reject
+                raise ValueError("Authentication service unavailable") from exc
         return payload
 
     async def revoke_access_token(self, access_token: str) -> TokenPayload:
-        """Decode access token and place its JTI on the Redis denylist until exp."""
         payload = self.decode_token(access_token)
         if payload.type != "access":
             raise ValueError("Not an access token")
@@ -178,7 +183,6 @@ class TokenService:
         access_token: str,
         refresh_token: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Revoke current access JTI; optionally revoke a refresh token."""
         access_payload = await self.revoke_access_token(access_token)
         refresh_revoked = False
         if refresh_token and self.session_store:
@@ -198,7 +202,6 @@ class TokenService:
         }
 
     async def logout_all(self, access_token: str) -> dict[str, Any]:
-        """Deny current access token and revoke all refresh tokens for the subject."""
         access_payload = await self.revoke_access_token(access_token)
         revoked_refresh = 0
         if self.session_store:
@@ -212,7 +215,6 @@ class TokenService:
         }
 
     async def rotate_refresh_token(self, refresh_token: str) -> tuple[str, str]:
-        """Validate refresh token, revoke old JTI, issue new access + refresh."""
         payload = self.decode_token(refresh_token)
         if payload.type != "refresh":
             raise ValueError("Not a refresh token")
