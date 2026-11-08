@@ -10,11 +10,15 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-use-openssl-rand-hex-32}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-quantum}:${POSTGRES_PASSWORD:-quantum}@postgres:5432/${POSTGRES_DB:-quantum_fintek}
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-quantum-redis-dev}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-quantum-redis-dev}
+      - AUTH_FAIL_CLOSED=${AUTH_FAIL_CLOSED:-true}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://app.localhost,http://api.localhost,http://localhost}
+      - JWT_KEY_STORE_PATH=${JWT_KEY_STORE_PATH:-/app/secrets/jwt/keyring.json}
     volumes:
       - ./apps/api/app:/app/apps/api/app
       - ./packages:/app/packages
+      - ./secrets:/app/secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,7 +72,12 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:-quantum-redis-dev}
     restart: unless-stopped
     networks:
       - quantum-net

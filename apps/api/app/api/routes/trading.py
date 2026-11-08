@@ -1,4 +1,4 @@
-"""Trading domain API routes — orders, positions, market data (JWT + RBAC protected)."""
+"""Trading domain API routes — orders, positions, market data (JWT + RBAC + org scope)."""
 
 from __future__ import annotations
 
@@ -13,17 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_roles
 from app.core.audit import log_event
-from app.db.models import Order
+from app.db.models import Membership, Order
 from app.db.session import get_db
 from app.identity.security import TokenPayload
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 Trader = Depends(require_roles("analyst", "quant", "trader"))
-Admin = Depends(require_roles("admin", "owner"))
 
-
-# ── enums & schemas ──────────────────────────────────────────────────────────
 
 class OrderSide(str, Enum):
     buy = "buy"
@@ -44,13 +41,14 @@ class OrderStatus(str, Enum):
 
 
 class PlaceOrderRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=16, description="Ticker symbol, e.g. AAPL")
+    symbol: str = Field(..., min_length=1, max_length=16)
     side: OrderSide
     order_type: OrderType = OrderType.market
-    quantity: float = Field(..., gt=0, description="Number of units")
-    limit_price: float | None = Field(None, gt=0, description="Required for limit orders")
-    stop_price: float | None = Field(None, gt=0, description="Required for stop orders")
+    quantity: float = Field(..., gt=0)
+    limit_price: float | None = Field(None, gt=0)
+    stop_price: float | None = Field(None, gt=0)
     notes: str = Field("", max_length=512)
+    org_id: str | None = Field(None, description="Optional org; defaults to JWT org_id claim")
 
 
 class OrderOut(BaseModel):
@@ -67,6 +65,7 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     actor_id: str
+    org_id: str | None = None
 
 
 class OrderListResponse(BaseModel):
@@ -109,8 +108,6 @@ class MarketDataResponse(BaseModel):
     quotes: list[MarketQuote]
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
 def _order_to_out(o: Order) -> OrderOut:
     return OrderOut(
         id=str(o.id),
@@ -126,10 +123,37 @@ def _order_to_out(o: Order) -> OrderOut:
         created_at=o.created_at,
         updated_at=o.updated_at,
         actor_id=str(o.actor_id) if o.actor_id else "",
+        org_id=str(o.org_id) if o.org_id else None,
     )
 
 
-# ── order routes ─────────────────────────────────────────────────────────────
+async def _assert_org_membership(
+    db: AsyncSession,
+    user: TokenPayload,
+    org_uuid: uuid.UUID,
+) -> None:
+    """Prevent IDOR: user must be member of org (platform admin exempt)."""
+    if "admin" in set(user.roles or []):
+        return
+    m = await db.scalar(
+        select(Membership).where(
+            Membership.user_id == uuid.UUID(user.sub),
+            Membership.organization_id == org_uuid,
+        )
+    )
+    if m is None:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+
+def _resolve_org_id(user: TokenPayload, body_org: str | None) -> uuid.UUID | None:
+    raw = body_org or user.org_id
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid org_id")
+
 
 @router.post("/orders", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
 async def place_order(
@@ -137,20 +161,20 @@ async def place_order(
     user: TokenPayload = Trader,
     db: AsyncSession = Depends(get_db),
 ) -> OrderOut:
-    """Place a new trading order (immediately simulates fill for market orders)."""
     if body.order_type == OrderType.limit and body.limit_price is None:
         raise HTTPException(status_code=400, detail="limit_price required for limit orders")
     if body.order_type == OrderType.stop and body.stop_price is None:
         raise HTTPException(status_code=400, detail="stop_price required for stop orders")
 
-    # Simulate immediate fill for market orders; pending for others
+    org_uuid = _resolve_org_id(user, body.org_id)
+    if org_uuid is not None:
+        await _assert_org_membership(db, user, org_uuid)
+
     import random
 
     fill_price: float | None = None
     order_status = OrderStatus.pending.value
-
     if body.order_type == OrderType.market:
-        # Simulated fill price ±0.1% around a fictional mid
         mid = round(100 + random.uniform(-5, 5), 2)
         spread = mid * 0.001
         fill_price = round(mid + (spread if body.side == OrderSide.buy else -spread), 4)
@@ -159,6 +183,7 @@ async def place_order(
     actor_uuid = uuid.UUID(user.sub) if user.sub else None
     order = Order(
         actor_id=actor_uuid,
+        org_id=org_uuid,
         symbol=body.symbol.upper(),
         side=body.side.value,
         order_type=body.order_type.value,
@@ -178,7 +203,10 @@ async def place_order(
         action="trading.order.place",
         actor_id=user.sub,
         resource=f"order:{order.id}",
-        detail=f"symbol={order.symbol} side={order.side} qty={order.quantity} status={order.status}",
+        detail=(
+            f"symbol={order.symbol} side={order.side} qty={order.quantity} "
+            f"status={order.status} org_id={order.org_id}"
+        ),
     )
     return _order_to_out(order)
 
@@ -192,13 +220,17 @@ async def list_orders(
     user: TokenPayload = Trader,
     db: AsyncSession = Depends(get_db),
 ) -> OrderListResponse:
-    """List the current user's orders (filtered optionally by symbol / status)."""
     actor_uuid = uuid.UUID(user.sub)
-    stmt = (
-        select(Order)
-        .where(Order.actor_id == actor_uuid)
-        .order_by(Order.created_at.desc())
-    )
+    stmt = select(Order).where(Order.actor_id == actor_uuid).order_by(Order.created_at.desc())
+
+    # Tenant isolation: when JWT carries org_id, only that org's rows
+    if user.org_id and "admin" not in set(user.roles or []):
+        try:
+            org_uuid = uuid.UUID(user.org_id)
+            stmt = stmt.where(Order.org_id == org_uuid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid org_id in token")
+
     if symbol:
         stmt = stmt.where(Order.symbol == symbol.upper())
     if order_status:
@@ -206,7 +238,6 @@ async def list_orders(
 
     count_rows = await db.scalars(stmt.with_only_columns(Order.id))
     total = len(count_rows.all())
-
     offset = (page - 1) * page_size
     rows = (await db.scalars(stmt.offset(offset).limit(page_size))).all()
     return OrderListResponse(
@@ -223,16 +254,20 @@ async def get_order(
     user: TokenPayload = Trader,
     db: AsyncSession = Depends(get_db),
 ) -> OrderOut:
-    """Get a single order by ID (must belong to the calling user)."""
     try:
         oid = uuid.UUID(order_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid order id")
 
     actor_uuid = uuid.UUID(user.sub)
-    order = await db.scalar(
-        select(Order).where(Order.id == oid, Order.actor_id == actor_uuid)
-    )
+    conditions = [Order.id == oid, Order.actor_id == actor_uuid]
+    if user.org_id and "admin" not in set(user.roles or []):
+        try:
+            conditions.append(Order.org_id == uuid.UUID(user.org_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid org_id in token")
+
+    order = await db.scalar(select(Order).where(*conditions))
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return _order_to_out(order)
@@ -244,16 +279,20 @@ async def cancel_order(
     user: TokenPayload = Trader,
     db: AsyncSession = Depends(get_db),
 ) -> CancelOrderResponse:
-    """Cancel a pending order."""
     try:
         oid = uuid.UUID(order_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid order id")
 
     actor_uuid = uuid.UUID(user.sub)
-    order = await db.scalar(
-        select(Order).where(Order.id == oid, Order.actor_id == actor_uuid)
-    )
+    conditions = [Order.id == oid, Order.actor_id == actor_uuid]
+    if user.org_id and "admin" not in set(user.roles or []):
+        try:
+            conditions.append(Order.org_id == uuid.UUID(user.org_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid org_id in token")
+
+    order = await db.scalar(select(Order).where(*conditions))
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.status != OrderStatus.pending.value:
@@ -272,23 +311,20 @@ async def cancel_order(
     return CancelOrderResponse(id=order_id, status="cancelled", detail="Order cancelled successfully")
 
 
-# ── positions route ───────────────────────────────────────────────────────────
-
 @router.get("/positions", response_model=PositionsResponse)
 async def get_positions(
     user: TokenPayload = Trader,
     db: AsyncSession = Depends(get_db),
 ) -> PositionsResponse:
-    """Aggregate filled orders into current positions."""
     actor_uuid = uuid.UUID(user.sub)
-    rows = (
-        await db.scalars(
-            select(Order).where(
-                Order.actor_id == actor_uuid,
-                Order.status == OrderStatus.filled.value,
-            )
-        )
-    ).all()
+    conditions = [Order.actor_id == actor_uuid, Order.status == OrderStatus.filled.value]
+    if user.org_id and "admin" not in set(user.roles or []):
+        try:
+            conditions.append(Order.org_id == uuid.UUID(user.org_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid org_id in token")
+
+    rows = (await db.scalars(select(Order).where(*conditions))).all()
 
     pos: dict[str, dict] = {}
     for o in rows:
@@ -322,8 +358,6 @@ async def get_positions(
     return PositionsResponse(positions=positions, total_symbols=len(positions))
 
 
-# ── market data stub ──────────────────────────────────────────────────────────
-
 _SEED_PRICES = {
     "AAPL": 189.5, "MSFT": 415.0, "GOOGL": 175.2, "AMZN": 192.0,
     "NVDA": 875.0, "TSLA": 215.0, "JPM": 195.5, "GS": 472.0,
@@ -333,13 +367,9 @@ _SEED_PRICES = {
 
 @router.get("/market-data", response_model=MarketDataResponse)
 def get_market_data(
-    symbols: str = Query(
-        "AAPL,MSFT,GOOGL,AMZN,NVDA",
-        description="Comma-separated symbols",
-    ),
+    symbols: str = Query("AAPL,MSFT,GOOGL,AMZN,NVDA"),
     _user: TokenPayload = Trader,
 ) -> MarketDataResponse:
-    """Return simulated real-time market quotes for requested symbols."""
     import random
 
     now = datetime.now(timezone.utc).isoformat()
@@ -348,7 +378,6 @@ def get_market_data(
         base = _SEED_PRICES.get(sym, 100.0)
         mid = round(base * (1 + random.uniform(-0.003, 0.003)), 2)
         spread = max(0.01, mid * 0.0002)
-        change_pct = round(random.uniform(-2.5, 2.5), 3)
         quotes.append(
             MarketQuote(
                 symbol=sym,
@@ -356,7 +385,7 @@ def get_market_data(
                 ask=round(mid + spread / 2, 4),
                 last=mid,
                 volume=random.randint(10_000, 5_000_000),
-                change_pct=change_pct,
+                change_pct=round(random.uniform(-2.5, 2.5), 3),
                 timestamp=now,
             )
         )

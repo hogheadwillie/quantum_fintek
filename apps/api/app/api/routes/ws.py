@@ -1,4 +1,4 @@
-"""WebSocket endpoints — real-time market data stream."""
+"""WebSocket endpoints — authenticated real-time market data stream."""
 
 from __future__ import annotations
 
@@ -8,6 +8,11 @@ import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from app.core.config import get_settings
+from app.core.redis import get_redis
+from app.identity.security import SessionStore, TokenService
+from app.identity.security.key_rotation import get_key_ring_manager
 
 router = APIRouter(prefix="/ws", tags=["websocket"])
 
@@ -25,35 +30,77 @@ _SEED_PRICES = {
 }
 
 
+def _extract_token(websocket: WebSocket) -> str | None:
+    # Prefer Authorization: Bearer … ; fallback ?token=
+    auth = websocket.headers.get("authorization") or websocket.headers.get("Authorization")
+    if auth and auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return websocket.query_params.get("token")
+
+
+async def _build_token_service() -> TokenService:
+    settings = get_settings()
+    redis_client = await get_redis()
+    store = SessionStore(
+        redis_client,
+        prefix=settings.redis_key_prefix,
+        fail_closed=settings.auth_fail_closed,
+    )
+    return TokenService(
+        key_ring=get_key_ring_manager().ring,
+        access_token_expire_minutes=settings.access_token_expire_minutes,
+        refresh_token_expire_days=settings.refresh_token_expire_days,
+        session_store=store,
+        fail_closed=settings.auth_fail_closed,
+    )
+
+
 @router.websocket("/market-data")
 async def market_data_stream(
     websocket: WebSocket,
     symbols: str = "AAPL,MSFT,GOOGL,AMZN,NVDA",
     interval_ms: int = 1000,
 ) -> None:
-    """Stream simulated real-time market quotes.
+    """Stream market quotes. Requires valid access JWT (query token= or Authorization).
 
-    Connect with:
-        ws://localhost:8000/ws/market-data?symbols=AAPL,MSFT&interval_ms=500
-
-    Each message is a JSON array of quote objects.
-    The client can send ``{"action": "subscribe", "symbols": ["TSLA", "NVDA"]}``
-    or ``{"action": "unsubscribe", "symbols": ["TSLA"]}`` to update the
-    subscription at any time.
+    Periodically re-validates denylist so logout/revocation terminates the socket.
     """
+    token = _extract_token(websocket)
+    if not token:
+        await websocket.close(code=4401, reason="Missing access token")
+        return
+
+    try:
+        tokens = await _build_token_service()
+        payload = await tokens.validate_access_token(token)
+    except Exception:
+        await websocket.close(code=4401, reason="Invalid or revoked token")
+        return
+
     await websocket.accept()
 
-    # Initialise prices from seed (random walk)
+    settings = get_settings()
+    recheck = max(5, int(settings.ws_auth_recheck_seconds))
+    last_auth = asyncio.get_event_loop().time()
+
     current_prices: dict[str, float] = {}
     active_symbols: list[str] = [s.strip().upper() for s in symbols.split(",") if s.strip()][:20]
     for sym in active_symbols:
         current_prices[sym] = _SEED_PRICES.get(sym, 100.0) * (1 + random.uniform(-0.005, 0.005))
 
-    interval = max(100, min(interval_ms, 10_000)) / 1_000  # clamp 100 ms – 10 s
+    interval = max(100, min(interval_ms, 10_000)) / 1_000
 
     try:
         while True:
-            # Non-blocking check for incoming control messages
+            now_t = asyncio.get_event_loop().time()
+            if now_t - last_auth >= recheck:
+                try:
+                    await tokens.validate_access_token(token)
+                    last_auth = now_t
+                except Exception:
+                    await websocket.close(code=4401, reason="Token revoked or expired")
+                    return
+
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=0.0)
                 msg = json.loads(raw)
@@ -73,7 +120,6 @@ async def market_data_stream(
             now = datetime.now(timezone.utc).isoformat()
             for sym in active_symbols:
                 prev = current_prices.get(sym, 100.0)
-                # Geometric Brownian Motion tick
                 drift = 0.0001
                 vol = 0.001
                 current_prices[sym] = round(prev * (1 + drift + vol * random.gauss(0, 1)), 4)
@@ -88,6 +134,7 @@ async def market_data_stream(
                         "volume": random.randint(1_000, 100_000),
                         "change_pct": round((mid / _SEED_PRICES.get(sym, mid) - 1) * 100, 3),
                         "timestamp": now,
+                        "user_id": payload.sub,
                     }
                 )
 
