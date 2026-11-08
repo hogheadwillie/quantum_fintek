@@ -12,6 +12,7 @@ from app.core.redis import close_redis
 from app.db.session import init_db
 from app.identity.security.key_rotation import get_key_ring_manager
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 
 @asynccontextmanager
@@ -43,25 +44,37 @@ async def lifespan(_app: FastAPI):
 
 settings = get_settings()
 
+_docs_url = "/docs" if settings.openapi_enabled else None
+_redoc_url = "/redoc" if settings.openapi_enabled else None
+_openapi_url = "/openapi.json" if settings.openapi_enabled else None
+
 app = FastAPI(
     title="QuantumFintek API",
     description="Enterprise quantitative finance platform",
-    version="0.9.1",
+    version="0.9.2",
     lifespan=lifespan,
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=settings.cors_methods_list,
+    allow_headers=settings.cors_headers_list,
 )
 app.add_middleware(
     RateLimitMiddleware,
     trading_limit=getattr(settings, "rate_limit_trading", 60),
     global_limit=getattr(settings, "rate_limit_global", 600),
     window_seconds=getattr(settings, "rate_limit_window", 60),
+)
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enable_hsts=settings.enable_hsts,
+    hsts_max_age=settings.hsts_max_age,
 )
 
 app.include_router(auth.router)
@@ -80,22 +93,32 @@ app.add_middleware(StructuredLoggingMiddleware)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.9.1"}
+    return {"status": "ok", "service": "quantum-fintek-api", "version": "0.9.2"}
 
 
 @app.get("/")
 def root():
+    endpoints = {
+        "register": "/auth/register",
+        "login": "/auth/login",
+        "jwks": "/auth/jwks.json",
+        "me": "/auth/me",
+        "admin_jwt_keys": "/admin/jwt/keys",
+        "admin_jwt_rotate": "/admin/jwt/rotate",
+    }
+    if settings.openapi_enabled:
+        endpoints["docs"] = "/docs"
     return {
         "name": "QuantumFintek",
-        "version": "0.9.1",
-        "domains": ["trading", "quantitative", "ai-intelligence", "enterprise", "security", "compliance"],
-        "endpoints": {
-            "register": "/auth/register",
-            "login": "/auth/login",
-            "jwks": "/auth/jwks.json",
-            "me": "/auth/me",
-            "admin_jwt_keys": "/admin/jwt/keys",
-            "admin_jwt_rotate": "/admin/jwt/rotate",
-            "docs": "/docs",
-        },
+        "version": "0.9.2",
+        "env": settings.app_env,
+        "domains": [
+            "trading",
+            "quantitative",
+            "ai-intelligence",
+            "enterprise",
+            "security",
+            "compliance",
+        ],
+        "endpoints": endpoints,
     }

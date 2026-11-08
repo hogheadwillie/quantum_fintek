@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     cors_origins: str = (
         "http://localhost:3000,http://app.localhost,http://api.localhost,http://localhost"
     )
+    # Explicit methods/headers (avoid * in production-facing stacks)
+    cors_allow_methods: str = Field(
+        default="GET,POST,PUT,PATCH,DELETE,OPTIONS",
+        description="Comma-separated CORS methods",
+    )
+    cors_allow_headers: str = Field(
+        default="Authorization,Content-Type,Accept,X-Request-Id",
+        description="Comma-separated CORS request headers",
+    )
 
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
@@ -43,23 +52,47 @@ class Settings(BaseSettings):
     jwt_kid_prefix: str = Field(default="qf-key")
     jwt_auto_bootstrap: bool = Field(default=True)
 
-    # JWKS HTTP / in-process cache
-    jwt_jwks_cache_max_age: int = Field(
-        default=300,
-        description="Cache-Control max-age for /auth/jwks.json (seconds). Keep << rotation interval.",
+    jwt_jwks_cache_max_age: int = Field(default=300)
+    jwt_jwks_stale_while_revalidate: int = Field(default=60)
+
+    # OpenAPI / docs exposure
+    enable_openapi: bool | None = Field(
+        default=None,
+        description="If None: enabled only when app_env is not production/prod",
     )
-    jwt_jwks_stale_while_revalidate: int = Field(
-        default=60,
-        description="stale-while-revalidate for JWKS (seconds)",
+
+    # Security headers
+    enable_hsts: bool = Field(
+        default=False,
+        description="Send Strict-Transport-Security (enable only behind HTTPS)",
     )
+    hsts_max_age: int = Field(default=31536000)
 
     rate_limit_trading: int = 60
     rate_limit_global: int = 600
     rate_limit_window: int = 60
 
     @property
+    def is_production(self) -> bool:
+        return (self.app_env or "").lower() in {"production", "prod"}
+
+    @property
+    def openapi_enabled(self) -> bool:
+        if self.enable_openapi is not None:
+            return bool(self.enable_openapi)
+        return not self.is_production
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def cors_methods_list(self) -> list[str]:
+        return [m.strip() for m in self.cors_allow_methods.split(",") if m.strip()]
+
+    @property
+    def cors_headers_list(self) -> list[str]:
+        return [h.strip() for h in self.cors_allow_headers.split(",") if h.strip()]
 
     @property
     def redis_cluster_node_list(self) -> list[tuple[str, int]]:

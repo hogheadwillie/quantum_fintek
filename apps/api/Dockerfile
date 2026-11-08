@@ -1,35 +1,50 @@
-# QuantumFintek API
-# Multi-stage friendly; currently single stage for development clarity
+# QuantumFintek API — multi-stage, non-root runtime
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# System deps (minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy monorepo packages first (better layer caching)
-COPY packages/quant-core /app/packages/quant-core
-COPY packages/ai-intel /app/packages/ai-intel
+COPY packages/quant-core /build/packages/quant-core
+COPY packages/ai-intel /build/packages/ai-intel
+COPY packages/security /build/packages/security
+COPY packages/zos-bridge /build/packages/zos-bridge
 
-# Install local packages in editable mode
-RUN pip install --no-cache-dir -e /app/packages/quant-core \
-    && pip install --no-cache-dir -e /app/packages/ai-intel
+RUN pip install --no-cache-dir --prefix=/install \
+    -e /build/packages/quant-core \
+    -e /build/packages/ai-intel \
+    -e /build/packages/security \
+    -e /build/packages/zos-bridge
 
-# API requirements
-COPY apps/api/requirements.txt /app/apps/api/requirements.txt
-RUN pip install --no-cache-dir -r /app/apps/api/requirements.txt
+COPY apps/api/requirements.txt /build/requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r /build/requirements.txt
 
-# Application code
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 qf \
+    && useradd --system --uid 10001 --gid qf --home /app --shell /usr/sbin/nologin qf
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local
 COPY apps/api/app /app/apps/api/app
+COPY apps/api/alembic /app/apps/api/alembic
+COPY apps/api/alembic.ini /app/apps/api/alembic.ini
 
-# Make the app package importable
-ENV PYTHONPATH=/app/apps/api
+ENV PYTHONPATH=/app/apps/api \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER qf
 
 EXPOSE 8000
 
-# Development-friendly command (reload). Override in production.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production default: no reload. Override for local dev if needed.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

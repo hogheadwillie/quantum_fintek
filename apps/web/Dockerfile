@@ -13,9 +13,17 @@ RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
+
+RUN addgroup -S -g 10001 qf && adduser -S -u 10001 -G qf qf
+
 ENV NODE_ENV=production
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+ENV NEXT_TELEMETRY_DISABLED=1
+
+COPY --from=builder --chown=qf:qf /app/public ./public
+COPY --from=builder --chown=qf:qf /app/.next/standalone ./
+COPY --from=builder --chown=qf:qf /app/.next/static ./.next/static
+
+USER qf
+
 EXPOSE 3000
 CMD ["node", "server.js"]
