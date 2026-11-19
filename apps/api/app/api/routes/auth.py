@@ -67,12 +67,6 @@ class UserResponse(BaseModel):
     roles: list[str] = []
 
 
-class TokenRequest(BaseModel):
-    subject: str = Field(..., min_length=1)
-    org_id: str | None = None
-    roles: list[str] = []
-
-
 def _jwks_cache_control(max_age: int, swr: int) -> str:
     # Public document (no private keys). Clients/CDNs may cache.
     parts = ["public", f"max-age={max(0, max_age)}"]
@@ -265,14 +259,3 @@ async def verify_for_forward_auth(
     if payload.org_id:
         response.headers["X-QF-Org-Id"] = payload.org_id
     return response
-
-
-@router.post("/token", response_model=TokenResponse)
-async def issue_tokens(
-    body: TokenRequest,
-    tokens: TokenService = Depends(get_token_service),
-) -> TokenResponse:
-    roles = body.roles or ["user", "analyst"]
-    access = tokens.create_access_token(body.subject, org_id=body.org_id, roles=roles)
-    refresh = await tokens.create_refresh_token(body.subject, roles=roles, org_id=body.org_id)
-    return TokenResponse(access_token=access, refresh_token=refresh)
